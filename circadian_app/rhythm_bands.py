@@ -107,18 +107,46 @@ def r2_period_sweep(t_hours: np.ndarray, values: np.ndarray, periods_hours: np.n
     y = np.asarray(values, dtype=float)
     m = np.isfinite(t) & np.isfinite(y)
     t, y = t[m], y[m]
-    out = np.zeros(len(periods_hours), dtype=float)
-    if len(y) < 4:
+    periods = np.asarray(periods_hours, dtype=float)
+    out = np.zeros(len(periods), dtype=float)
+    n = len(y)
+    if n < 4 or len(periods) == 0:
         return out
-    sst = float(np.sum((y - y.mean()) ** 2))
+    yc = y - y.mean()
+    sst = float(np.dot(yc, yc))
     if sst <= 1e-15:
         return out
-    ones = np.ones_like(t)
-    for i, p in enumerate(periods_hours):
-        w = 2.0 * np.pi / float(p)
-        X = np.column_stack([ones, np.cos(w * t), np.sin(w * t)])
-        coef, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
-        out[i] = 1.0 - float(np.sum((y - X @ coef) ** 2)) / sst
+
+    # Vectorized chunked normal-equations solve across candidate periods (64 periods per BLAS batch)
+    chunk = 64
+    for start in range(0, len(periods), chunk):
+        p_blk = periods[start : start + chunk]
+        w = (2.0 * np.pi) / p_blk
+        phi = t[:, None] * w[None, :]
+        C = np.cos(phi)
+        S = np.sin(phi)
+        c0 = C.mean(axis=0)
+        s0 = S.mean(axis=0)
+        g11 = np.einsum("ij,ij->j", C, C) / n - c0 * c0
+        g22 = np.einsum("ij,ij->j", S, S) / n - s0 * s0
+        g12 = np.einsum("ij,ij->j", C, S) / n - c0 * s0
+        rc = (C.T @ yc) / n
+        rs = (S.T @ yc) / n
+        det = g11 * g22 - g12 * g12
+        good = det > 1e-14 * np.maximum(g11 * g22, 1e-18)
+        r2_blk = np.zeros(len(p_blk), dtype=float)
+        if np.any(good):
+            beta = (g22[good] * rc[good] - g12[good] * rs[good]) / det[good]
+            gamma = (g11[good] * rs[good] - g12[good] * rc[good]) / det[good]
+            r2_blk[good] = (n * (beta * rc[good] + gamma * rs[good])) / sst
+        if not np.all(good):
+            ones = np.ones(n, dtype=float)
+            for j in np.where(~good)[0]:
+                X = np.column_stack([ones, C[:, j], S[:, j]])
+                coef, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
+                r2_blk[j] = 1.0 - float(np.sum((y - X @ coef) ** 2)) / sst
+        out[start : start + chunk] = r2_blk
+
     return np.clip(out, 0.0, 1.0)
 
 

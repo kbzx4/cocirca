@@ -43,12 +43,14 @@ THIN_BORDER = Border(
 )
 
 
-def _auto_fit_columns(ws: openpyxl.worksheet.worksheet.Worksheet, min_width: int = 12, max_width: int = 38) -> None:
-    for col in ws.columns:
-        col_letter = get_column_letter(col[0].column)
+def _auto_fit_columns(ws: openpyxl.worksheet.worksheet.Worksheet, min_width: int = 12, max_width: int = 38, max_scan_rows: int = 200) -> None:
+    for col_idx in range(1, ws.max_column + 1):
+        col_letter = get_column_letter(col_idx)
         max_len = 0
-        for cell in col:
-            val = "" if cell.value is None else str(cell.value)
+        limit = min(ws.max_row, max_scan_rows)
+        for r_idx in range(1, limit + 1):
+            v = ws.cell(row=r_idx, column=col_idx).value
+            val = "" if v is None else str(v)
             if val.startswith("="):
                 val = "00000000"
             max_len = max(max_len, len(val))
@@ -261,7 +263,8 @@ def _populate_daily_sheet(ws: openpyxl.worksheet.worksheet.Worksheet, report: Ci
     ]
     present = [(k, lbl) for k, lbl in cols_wanted if k in dtbl.columns]
     headers = [lbl for _, lbl in present]
-    rows = [[row[k] for k, _ in present] for _, row in dtbl.iterrows()]
+    cols_only = [k for k, _ in present]
+    rows = dtbl[cols_only].to_numpy(dtype=object).tolist()
 
     fmts = {}
     for idx, (k, _) in enumerate(present, start=1):

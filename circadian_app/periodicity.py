@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from scipy import signal, stats
 
-from .cosinor import fit_cosinor
+from .rhythm_bands import r2_period_sweep
 
 
 @dataclass
@@ -59,35 +59,25 @@ def compute_chi_square_periodogram(
     if var_total <= 1e-15:
         return np.zeros_like(candidate_periods_hours), np.ones_like(candidate_periods_hours)
 
+    t_epochs_h = np.arange(N, dtype=float) * (epoch_minutes / 60.0)
+    P_arr = np.clip(np.rint((candidate_periods_hours * 60.0) / epoch_minutes).astype(int), 4, N // 2)
+    crit_vals = stats.chi2.ppf(1.0 - alpha, np.maximum(1, P_arr - 1))
     qp_vals = np.zeros(len(candidate_periods_hours), dtype=float)
-    crit_vals = np.zeros(len(candidate_periods_hours), dtype=float)
-    idx = np.arange(N, dtype=float)
 
-    for i, tau_h in enumerate(candidate_periods_hours):
-        P = int(round((tau_h * 60.0) / epoch_minutes))
-        P = max(4, min(P, N // 2))
-        K = N // P
-        if K < 2:
-            qp_vals[i] = 0.0
-            crit_vals[i] = float(stats.chi2.ppf(1.0 - alpha, max(1, P - 1)))
+    for i, (tau_h, P) in enumerate(zip(candidate_periods_hours, P_arr)):
+        P_int = int(P)
+        if (N // P_int) < 2:
             continue
 
-        # Assign each epoch to phase bin [0, P-1] using exact tau_h for crisp peak resolution
-        phase_bins = np.floor(((idx * epoch_minutes / 60.0) % tau_h) / tau_h * P).astype(int) % P
-        bin_means = np.zeros(P, dtype=float)
-        bin_counts = np.zeros(P, dtype=float)
-        np.add.at(bin_means, phase_bins, y_clean)
-        np.add.at(bin_counts, phase_bins, 1.0)
+        phase_bins = np.floor(((t_epochs_h % tau_h) / tau_h) * P_int).astype(int) % P_int
+        bin_sums = np.bincount(phase_bins, weights=y_clean, minlength=P_int)
+        bin_counts = np.bincount(phase_bins, minlength=P_int)
         nz = bin_counts > 0
-        bin_means[nz] /= bin_counts[nz]
-        bin_means[~nz] = mean_y
+        bin_means = np.full(P_int, mean_y, dtype=float)
+        bin_means[nz] = bin_sums[nz] / bin_counts[nz]
 
-        K_eff = N / P
         ss_between = float(np.sum(bin_counts * (bin_means - mean_y) ** 2))
-        # Normalized Q_p statistic distributed ~ chi2(P - 1)
-        qp = (N * ss_between) / var_total
-        qp_vals[i] = qp
-        crit_vals[i] = float(stats.chi2.ppf(1.0 - alpha, max(1, P - 1)))
+        qp_vals[i] = (N * ss_between) / var_total
 
     return qp_vals, crit_vals
 
@@ -120,14 +110,8 @@ def analyze_periodicity(
     # 2. Chi-Square Periodogram on binned series
     chi2_qp, chi2_crit = compute_chi_square_periodogram(y, epoch_minutes=epoch_minutes, candidate_periods_hours=periods)
 
-    # 3. Cosinor R^2 sweep
-    cos_r2 = np.zeros_like(periods)
-    for idx_p, tau in enumerate(periods):
-        try:
-            res = fit_cosinor(t_valid, y_valid, period_hours=float(tau), n_harmonics=1)
-            cos_r2[idx_p] = res.r2
-        except Exception:
-            cos_r2[idx_p] = 0.0
+    # 3. Cosinor R^2 sweep (vectorized)
+    cos_r2 = r2_period_sweep(t_valid, y_valid, periods)
 
     # 4. FFT Power Spectrum on evenly spaced detrended series
     y_fill = pd.Series(y).interpolate(limit_direction="both").to_numpy(dtype=float)

@@ -130,13 +130,22 @@ def fit_cosinor(
         raise ValueError(f"Insufficient valid data points ({n}) for {n_harmonics}-harmonic cosinor (need > {p + 1}).")
 
     omega = 2.0 * np.pi / float(period_hours)
-    cols = [np.ones(n, dtype=float)]
+    X = np.empty((n, p), dtype=float)
+    X[:, 0] = 1.0
     for k in range(1, n_harmonics + 1):
-        cols.append(np.cos(k * omega * t))
-        cols.append(np.sin(k * omega * t))
-    X = np.column_stack(cols)
+        ang = (k * omega) * t
+        X[:, 1 + 2 * (k - 1)] = np.cos(ang)
+        X[:, 2 + 2 * (k - 1)] = np.sin(ang)
 
-    coef, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
+    XtX = X.T @ X
+    Xty = X.T @ y
+    try:
+        XtX_inv = np.linalg.inv(XtX)
+        coef = XtX_inv @ Xty
+    except np.linalg.LinAlgError:
+        coef, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
+        XtX_inv = np.linalg.pinv(XtX)
+
     y_hat = X @ coef
     resid = y - y_hat
 
@@ -159,7 +168,6 @@ def fit_cosinor(
         p_val = 1.0
 
     # Covariance matrix of OLS estimates
-    XtX_inv = np.linalg.pinv(X.T @ X)
     cov = sigma2 * XtX_inv
     t_crit = float(stats.t.ppf(1.0 - alpha / 2.0, df_resid))
 
@@ -205,22 +213,22 @@ def fit_cosinor(
             deg_neg -= 360.0
         phi_se_hours = float(phi_se_rad / k_omega)
 
-        # Partial F-test for harmonic k using 2x2 parameter covariance
-        sub_cov = cov[idx_b : idx_g + 1, idx_b : idx_g + 1]
+        # Partial F-test and partial R^2 for harmonic k via 2x2 block of (X'X)^-1
+        sub_unscaled = XtX_inv[idx_b : idx_g + 1, idx_b : idx_g + 1]
         theta_k = np.array([bk, gk])
-        try:
-            sub_inv = np.linalg.pinv(sub_cov)
-            f_k = float(0.5 * (theta_k @ sub_inv @ theta_k)) if sigma2 > 1e-15 else 0.0
-            p_k = float(stats.f.sf(f_k, 2, df_resid))
-        except Exception:
-            f_k, p_k = 0.0, 1.0
+        det_s = float(sub_unscaled[0, 0] * sub_unscaled[1, 1] - sub_unscaled[0, 1] * sub_unscaled[1, 0])
+        if abs(det_s) > 1e-18:
+            sub_inv_u = np.array(
+                [[sub_unscaled[1, 1], -sub_unscaled[0, 1]], [-sub_unscaled[1, 0], sub_unscaled[0, 0]]],
+                dtype=float,
+            ) / det_s
+            ssr_drop = max(0.0, float(theta_k @ sub_inv_u @ theta_k))
+        else:
+            ssr_drop = max(0.0, float(theta_k @ np.linalg.pinv(sub_unscaled) @ theta_k))
 
-        # Contribution to variance (orthogonal for complete cycles, approximate via partial R^2 in general)
-        keep_cols = [c for c in range(p) if c not in (idx_b, idx_g)]
-        X_red = X[:, keep_cols]
-        c_red, _, _, _ = np.linalg.lstsq(X_red, y, rcond=None)
-        ssr_red = float(np.sum((y - X_red @ c_red) ** 2))
-        partial_r2 = max(0.0, (ssr_red - ssr) / sst) if sst > 1e-15 else 0.0
+        f_k = float(0.5 * ssr_drop / sigma2) if sigma2 > 1e-15 else 0.0
+        p_k = float(stats.f.sf(f_k, 2, df_resid)) if sigma2 > 1e-15 else 1.0
+        partial_r2 = max(0.0, ssr_drop / sst) if sst > 1e-15 else 0.0
 
         harmonics.append(
             HarmonicComponent(

@@ -109,7 +109,7 @@ def figure_to_png_bytes(fig: Figure, dpi: int = 160) -> bytes:
 
 ACTOGRAM_MAX_BINS_PER_DAY = 1440  # 1-minute display resolution
 TIMESERIES_MAX_POINTS = 20_000
-MPL_ACTOGRAM_MAX_BARS_PER_ROW = 576  # above this, draw rows as stepped fills instead of individual bars
+MPL_ACTOGRAM_MAX_BARS_PER_ROW = 96  # above this, draw rows as stepped fills instead of thousands of bar patches
 
 
 def _build_actogram_matrix(
@@ -310,15 +310,15 @@ def make_actogram_mpl(
 
     ax.set_yticks([n_days - r - 0.55 for r in range(n_days)])
     ax.set_yticklabels(day_labels, fontsize=8.5)
-    ax.set_ylim(-0.15, n_days + 0.1)
+    ax.set_ylim(-0.15, n_days + 0.15)
     title_kind = "Double-Plotted" if double_plotted else "Single-Plotted"
     ax.set_title(
         f"{title_kind} Actogram — {rep.channel_name} (τ = {rep.period_used_hours:.2f} h, MESOR = {rep.cosinor_single.mesor:.1f})",
         fontsize=12,
         fontweight="bold",
-        pad=10,
+        pad=28,
     )
-    ax.legend(loc="upper right", ncol=5, fontsize=8, framealpha=0.92)
+    ax.legend(loc="lower right", bbox_to_anchor=(1.0, 1.01), ncol=5, fontsize=8, framealpha=0.92)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     fig.tight_layout()
@@ -402,7 +402,7 @@ def make_actogram_plotly(
 
     max_x = 48 if double_plotted else 24
     fig.update_layout(
-        title=f"{'Double-Plotted' if double_plotted else 'Single-Plotted'} Actogram — {rep.channel_name}",
+        title=dict(text=f"{'Double-Plotted' if double_plotted else 'Single-Plotted'} Actogram — {rep.channel_name}", y=0.97),
         xaxis=dict(
             title="Clock Time (hours)",
             tickmode="array",
@@ -411,7 +411,8 @@ def make_actogram_plotly(
             range=[0, max_x],
         ),
         yaxis=dict(title="Recording Day"),
-        height=max(420, 32 * len(day_labels) + 140),
+        height=max(440, 32 * len(day_labels) + 160),
+        margin=dict(t=85, b=55),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
     return apply_plotly_theme(fig)

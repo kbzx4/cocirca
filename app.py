@@ -1,4 +1,4 @@
-"""Streamlit dashboard for Phyphox / passive phone circadian activity & light rhythmometry."""
+"""cosirca — Passive phone circadian rhythmometry, actography, harmonics, and circular statistics."""
 
 from __future__ import annotations
 
@@ -44,23 +44,58 @@ from circadian_app.theme import (
     reset_seen_labels,
     seen_axis_labels,
     set_plot_theme,
+    to_rgba,
+)
+from circadian_app.ui_visuals import (
+    build_cosirca_favicon_uri,
+    inject_cosirca_css,
+    make_animated_harmonics_plotly,
+    make_animated_polar_plotly,
+    make_interactive_periodogram_plotly,
+    make_interactive_rhythm_bands_plotly,
+    make_interactive_shift_timeline_plotly,
+    render_cosirca_header,
+    render_kv_card,
+    render_live_status_badge,
+    render_phase_summary_svg,
 )
 
-# 1 s → 6 h; each value divides 86,400 s so every day has a whole number of bins
+# 1 s -> 6 h; each value divides 86,400 s so every day has a whole number of bins
 BIN_SIZE_OPTIONS_SEC = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1200, 1800, 3600, 7200, 10800, 14400, 21600]
-LAZY_EXPORT_EPOCHS = 20_000  # above this, Excel / binned-CSV exports are built on request, not every rerun
+SECTIONS = [
+    "Overview",
+    "Actograms",
+    "Cosinor & Harmonics",
+    "Periodicity & Bands",
+    "Circular Stats & Shift",
+    "Export",
+]
 
 st.set_page_config(
-    page_title="Circadian Phyphox Studio",
-    page_icon="🌓",
+    page_title="cosirca",
+    page_icon=build_cosirca_favicon_uri(),
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-st.title("🌓 Circadian Phyphox Studio")
-st.caption(
-    "Passive phone activity & ambient light rhythmometry • Actograms • Cosinor & Circadian Harmonics • Circular Statistics • Acrophase Shift • Excel Export"
-)
+
+def _dataset_signature(ds: RawSensorDataset) -> tuple:
+    ts = ds.df["timestamp"]
+    return (
+        ds.source_name,
+        ds.source_type,
+        len(ds.df),
+        str(ts.iloc[0]) if len(ts) else "",
+        str(ts.iloc[-1]) if len(ts) else "",
+        tuple(ds.df.columns),
+    )
+
+
+@st.cache_data(max_entries=16, show_spinner=False)
+def _cached_analysis(_dataset: RawSensorDataset, dataset_sig: tuple, cfg: CircadianAnalysisConfig) -> CircadianReport:
+    del dataset_sig
+    return run_full_analysis(_dataset, cfg)
+
 
 if "dataset" not in st.session_state:
     st.session_state.dataset = generate_synthetic_circadian_data(
@@ -71,7 +106,7 @@ if "recorder" not in st.session_state:
 
 
 with st.sidebar:
-    st.header("1. Data Input / Passive Recorder")
+    st.header("01 / Data Input")
     input_mode = st.radio(
         "Source Mode",
         ["Synthetic Demo", "Upload Phyphox / CSV / XLSX", "Live Phyphox Remote Recorder"],
@@ -105,7 +140,7 @@ with st.sidebar:
         h2_ratio = st.slider("2nd Harmonic (12h) Ratio", 0.0, 0.6, 0.28, 0.02)
         h3_ratio = st.slider("3rd Harmonic (8h) Ratio", 0.0, 0.4, 0.12, 0.02)
 
-        if st.button("Generate / Load Demo Data", type="primary", use_container_width=True):
+        if st.button("Generate / Load Demo Data", type="primary", width="stretch"):
             st.session_state.dataset = generate_synthetic_circadian_data(
                 days=s_days,
                 epoch_minutes=10,
@@ -134,7 +169,7 @@ with st.sidebar:
             t_val = st.time_input("Start Time", value=dt_time(0, 0))
             start_dt = datetime.combine(d_val, t_val)
 
-        if uploaded_files and st.button("Load Uploaded File(s)", type="primary", use_container_width=True):
+        if uploaded_files and st.button("Load Uploaded File(s)", type="primary", width="stretch"):
             try:
                 loaded: List[RawSensorDataset] = []
                 for uf in uploaded_files:
@@ -146,7 +181,7 @@ with st.sidebar:
 
     else:
         st.info(
-            "In Phyphox on your phone, open an experiment (e.g., Light + Acceleration), tap **⋮ → Allow remote access**, and enter the URL below."
+            "In Phyphox on your phone, open an experiment (Light + Acceleration), open the menu -> Allow remote access, and enter the URL below."
         )
         phy_url = st.text_input("Phyphox Remote URL", value="http://192.168.1.50:8080")
         sim_live = st.checkbox("Simulate live phone stream (no phone needed)", value=True)
@@ -154,7 +189,7 @@ with st.sidebar:
         log_path = st.text_input("CSV Log File", value="recordings/phyphox_live.csv")
 
         c1, c2 = st.columns(2)
-        if c1.button("Probe /config", use_container_width=True):
+        if c1.button("Probe /config", width="stretch"):
             try:
                 info = PhyphoxLiveRecorder.probe_phyphox(phy_url)
                 st.success(f"Connected: {info['title']} | Buffers: {', '.join(info['buffers'])}")
@@ -164,7 +199,7 @@ with st.sidebar:
         rec: PhyphoxLiveRecorder | None = st.session_state.recorder
         is_running = rec is not None and rec.is_running()
         if not is_running:
-            if c2.button("Start Passive Rec", type="primary", use_container_width=True):
+            if c2.button("Start Passive Rec", type="primary", width="stretch"):
                 rec = PhyphoxLiveRecorder(
                     base_url=phy_url,
                     output_csv=log_path,
@@ -175,17 +210,17 @@ with st.sidebar:
                 st.session_state.recorder = rec
                 st.rerun()
         else:
-            if c2.button("Stop Recording", type="secondary", use_container_width=True):
+            if c2.button("Stop Recording", type="secondary", width="stretch"):
                 rec.stop()
                 st.rerun()
 
         if rec is not None:
-            st.write(f"**Status:** {'🟢 Recording' if rec.is_running() else '⚪ Stopped'} | **Samples:** {rec.samples_recorded}")
+            render_live_status_badge(rec.is_running(), rec.samples_recorded)
             if rec.last_sample:
                 st.json(rec.last_sample)
             if rec.last_error:
                 st.warning(f"Last error: {rec.last_error}")
-            if Path(rec.output_csv).exists() and st.button("Analyze Recorded Log", use_container_width=True):
+            if Path(rec.output_csv).exists() and st.button("Analyze Recorded Log", width="stretch"):
                 try:
                     st.session_state.dataset = rec.load_recorded_dataset()
                     st.success("Loaded recorded passive log.")
@@ -193,7 +228,7 @@ with st.sidebar:
                     st.error(str(exc))
 
     st.divider()
-    st.header("2. Analysis Parameters")
+    st.header("02 / Parameters")
     epoch_sec = st.select_slider(
         "Epoch Bin Size",
         options=BIN_SIZE_OPTIONS_SEC,
@@ -212,25 +247,36 @@ with st.sidebar:
     )
     custom_tau = st.number_input("Custom τ (hours)", 12.0, 36.0, 24.0, 0.1) if period_mode == "custom" else 24.0
     period_range = st.slider(
-        "Period Scan Range (h)", 4.0, 48.0, (9.0, 36.0), 0.5,
+        "Period Scan Range (h)",
+        4.0,
+        48.0,
+        (9.0, 36.0),
+        0.5,
         help="Periods searched by all periodograms and the rhythm-band analysis.",
     )
     circ_band = st.slider(
-        "Circadian Band (h)", 12.0, 36.0, (20.0, 28.0), 0.5,
+        "Circadian Band (h)",
+        12.0,
+        36.0,
+        (20.0, 28.0),
+        0.5,
         help="Ultradian = shorter than the lower bound; infradian = longer than the upper bound. τ is estimated inside this band.",
     )
     bimodal_prom = st.slider(
-        "Bimodality: Min 2nd-Peak Prominence (% of range)", 5, 50, 10,
+        "Bimodality: Min 2nd-Peak Prominence (% of range)",
+        5,
+        50,
+        10,
         help="How pronounced the second daily peak must be (relative to the waveform's full range) to count as bimodal.",
     )
     onset_method = st.selectbox("Onset / Offset Detector", ["template", "threshold", "cosinor"], index=0)
     use_custom_split = st.checkbox("Set Acrophase Shift Split Day", value=False)
-    split_day = st.number_input("Split Day (Pre < Day ≤ Post)", min_value=2, max_value=60, value=8) if use_custom_split else None
+    split_day = st.number_input("Split Day (Pre < Day <= Post)", min_value=2, max_value=60, value=8) if use_custom_split else None
 
     st.divider()
-    st.header("3. Chart Colours")
-    bg_choice = st.selectbox("Graph Background", [*BACKGROUND_PRESETS, "Custom…"], index=0)
-    chart_bg = st.color_picker("Custom background", "#ffffff") if bg_choice == "Custom…" else BACKGROUND_PRESETS[bg_choice]
+    st.header("03 / Appearance")
+    bg_choice = st.selectbox("Graph Background", [*BACKGROUND_PRESETS, "Custom..."], index=3)
+    chart_bg = st.color_picker("Custom background", "#0f172a") if bg_choice == "Custom..." else BACKGROUND_PRESETS[bg_choice]
     palette_name = st.selectbox("Plot Colour Palette", list(PALETTES), index=0)
     base_theme = build_theme(chart_bg, palette_name)
     color_overrides = {}
@@ -258,7 +304,7 @@ with st.sidebar:
             pd.DataFrame({"Original label": pd.Series(dtype="object"), "New text": pd.Series(dtype="object")}),
             num_rows="dynamic",
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
             key="axis_label_editor",
             column_config={
                 "Original label": st.column_config.SelectboxColumn("Original label", options=known_labels, required=True),
@@ -266,7 +312,8 @@ with st.sidebar:
             },
         )
         label_pairs = tuple(
-            (str(o), str(n)) for o, n in zip(label_rows["Original label"], label_rows["New text"])
+            (str(o), str(n))
+            for o, n in zip(label_rows["Original label"], label_rows["New text"])
             if isinstance(o, str) and o and isinstance(n, str) and n.strip()
         )
     chart_theme = build_theme(
@@ -285,6 +332,7 @@ with st.sidebar:
     reset_seen_labels()
     set_plot_theme(chart_theme)
 
+inject_cosirca_css(chart_theme)
 
 dataset: RawSensorDataset = st.session_state.dataset
 
@@ -293,7 +341,7 @@ _span_sec = (_ts.iloc[-1] - _ts.iloc[0]).total_seconds() if len(_ts) > 1 else 0.
 _src_dt_sec = float(_ts.diff().dt.total_seconds().median()) if len(_ts) > 1 else float("nan")
 if np.isfinite(_src_dt_sec) and epoch_sec < _src_dt_sec * 0.99:
     st.sidebar.caption(
-        f"ℹ️ The source is sampled about every {format_bin_size(_src_dt_sec / 60.0)}, so bins of "
+        f"Note: The source is sampled about every {format_bin_size(_src_dt_sec / 60.0)}, so bins of "
         f"{format_bin_size(epoch_min)} are mostly empty. Gaps of up to 60 min are interpolated, which adds no real detail."
     )
 if _span_sec > 0 and _span_sec / epoch_sec < 24:
@@ -319,8 +367,9 @@ cfg = CircadianAnalysisConfig(
     split_day=int(split_day) if split_day is not None else None,
 )
 
+dataset_sig = _dataset_signature(dataset)
 try:
-    report: CircadianReport = run_full_analysis(dataset, cfg)
+    report: CircadianReport = _cached_analysis(dataset, dataset_sig, cfg)
 except Exception as exc:
     st.error(f"Analysis failed: {exc}")
     st.stop()
@@ -331,14 +380,21 @@ if report.activity_report is not None:
 if report.light_report is not None:
     avail_channels.append("Light")
 
-selected_ch_name = st.radio("Active Inspection Channel", avail_channels, horizontal=True) if len(avail_channels) > 1 else avail_channels[0]
+selected_ch_name = (
+    st.radio("Active Inspection Channel", avail_channels, horizontal=True)
+    if len(avail_channels) > 1
+    else avail_channels[0]
+)
 rep = report.activity_report if selected_ch_name == "Activity" else report.light_report
+
+render_cosirca_header(report, rep, format_bin_size(report.binned.epoch_minutes))
 
 for w in report.warnings:
     st.warning(w)
 
-# Top KPI Cards
-k1, k2, k3, k4, k5, k6 = st.columns(6)
+# Top KPI Cards (two 3-column rows so labels and deltas never truncate or overlap)
+k1, k2, k3 = st.columns(3)
+k4, k5, k6 = st.columns(3)
 k1.metric("Period τ (Consensus)", f"{rep.periodogram.consensus_tau_hours:.2f} h", f"Used: {rep.period_used_hours:.2f} h")
 k2.metric("Single Cosinor MESOR", f"{rep.cosinor_single.mesor:.2f}", f"Amp: {rep.cosinor_single.amplitude:.2f}")
 k3.metric("Acrophase (HH:MM)", rep.cosinor_single.acrophase_hhmm, f"{rep.cosinor_single.acrophase_deg_neg:.1f}°")
@@ -360,18 +416,19 @@ elif rep.shift_report is not None:
 else:
     k6.metric("Acrophase Shift", "N/A")
 
-tabs = st.tabs(
-    [
-        "📈 Overview & Time Series",
-        "📊 Actograms",
-        "🌊 Cosinor & Harmonics",
-        "🔎 Periodicity, Rhythm Bands & Bimodality",
-        "🧭 Circular Stats & Acrophase Shift",
-        "📥 Excel & Data Export",
-    ]
+active_section = st.segmented_control(
+    "Section",
+    SECTIONS,
+    default="Overview",
+    label_visibility="collapsed",
+    width="stretch",
 )
+if not active_section:
+    active_section = "Overview"
 
-with tabs[0]:
+if active_section == "Overview":
+    render_phase_summary_svg(report, rep)
+
     st.subheader(f"Binned Time Series & Cosinor Overlay — {rep.channel_name}")
     bdf_full = report.binned.df
     bdf = downsample_for_display(bdf_full)
@@ -382,13 +439,13 @@ with tabs[0]:
     fig_ts = make_subplots(specs=[[{"secondary_y": report.binned.has_light and report.binned.has_activity}]])
     if report.binned.has_activity:
         fig_ts.add_trace(
-            go.Scatter(x=bdf["timestamp"], y=bdf["activity"], name="Activity", line=dict(color=chart_theme.activity, width=1.1), opacity=0.75),
+            go.Scatter(x=bdf["timestamp"], y=bdf["activity"], name="Activity", line=dict(color=chart_theme.activity, width=1.2), opacity=0.82),
             secondary_y=False,
         )
     if report.binned.has_light:
         l_col = "log_lux" if cfg.use_log_lux else "lux"
         fig_ts.add_trace(
-            go.Scatter(x=bdf["timestamp"], y=bdf[l_col], name=f"Light ({l_col})", line=dict(color=chart_theme.light, width=1.1), opacity=0.65),
+            go.Scatter(x=bdf["timestamp"], y=bdf[l_col], name=f"Light ({l_col})", line=dict(color=chart_theme.light, width=1.2), opacity=0.72),
             secondary_y=report.binned.has_activity,
         )
     if "cosinor_harmonics_fit" in bdf.columns:
@@ -397,42 +454,50 @@ with tabs[0]:
                 x=bdf["timestamp"],
                 y=bdf["cosinor_harmonics_fit"],
                 name=f"{cfg.n_harmonics}-Harmonic Fit",
-                line=dict(color=chart_theme.fit, width=2.0),
+                line=dict(color=chart_theme.fit, width=2.1),
             ),
             secondary_y=(selected_ch_name == "Light" and report.binned.has_activity),
         )
-    fig_ts.update_layout(height=420, hovermode="x unified")
+    fig_ts.update_layout(
+        height=440,
+        margin=dict(t=65, b=40),
+        hovermode="x unified",
+        xaxis=dict(rangeslider=dict(visible=True, thickness=0.05)),
+        legend=dict(orientation="h", yanchor="bottom", y=1.03, xanchor="right", x=1),
+    )
     apply_plotly_theme(fig_ts)
-    st.plotly_chart(fig_ts, use_container_width=True)
+    st.plotly_chart(fig_ts, width="stretch")
 
     c_l, c_r = st.columns(2)
     with c_l:
-        st.markdown("**Dataset Summary**")
-        st.write(
-            {
-                "Source": report.source_name,
-                "Start": str(report.binned.start_time),
-                "End": str(report.binned.end_time),
-                "Duration (days)": round(report.binned.n_days, 2),
-                "Total Epochs": len(bdf_full),
-                "Epoch Size": format_bin_size(report.binned.epoch_minutes),
-            }
+        st.markdown("**Recording Telemetry**")
+        render_kv_card(
+            [
+                ("Source", report.source_name),
+                ("Bin Width", format_bin_size(report.binned.epoch_minutes)),
+                ("Start", f"{report.binned.start_time:%Y-%m-%d %H:%M}"),
+                ("End", f"{report.binned.end_time:%Y-%m-%d %H:%M}"),
+                ("Duration", f"{report.binned.n_days:.2f} days"),
+                ("Total Epochs", f"{len(bdf_full):,}"),
+            ]
         )
+
     with c_r:
         if rep.non_parametric is not None:
             np_m = rep.non_parametric
-            st.markdown("**Non-Parametric Circadian Variables (Van Someren)**")
-            st.write(
-                {
-                    "Interdaily Stability (IS)": round(np_m.interdaily_stability_is, 4),
-                    "Intradaily Variability (IV)": round(np_m.intradaily_variability_iv, 4),
-                    "M10 (mean / onset)": f"{np_m.m10_value:.2f} @ {np_m.m10_onset_hhmm}",
-                    "L5 (mean / onset)": f"{np_m.l5_value:.2f} @ {np_m.l5_onset_hhmm}",
-                    "Relative Amplitude (RA)": round(np_m.relative_amplitude_ra, 4),
-                }
+            st.markdown("**Non-Parametric Variables (Van Someren)**")
+            render_kv_card(
+                [
+                    ("Interdaily Stability (IS)", f"{np_m.interdaily_stability_is:.4f}"),
+                    ("Intradaily Variability (IV)", f"{np_m.intradaily_variability_iv:.4f}"),
+                    ("M10 Window", f"{np_m.m10_value:.2f} @ {np_m.m10_onset_hhmm}"),
+                    ("L5 Window", f"{np_m.l5_value:.2f} @ {np_m.l5_onset_hhmm}"),
+                    ("Relative Amplitude (RA)", f"{np_m.relative_amplitude_ra:.4f}"),
+                    ("M10 / L5 Midpoints", f"{np_m.m10_midpoint_hhmm} / {np_m.l5_midpoint_hhmm}"),
+                ]
             )
 
-with tabs[1]:
+elif active_section == "Actograms":
     st.subheader("Actograms (Single & Double-Plotted)")
     ac1, ac2, ac3 = st.columns(3)
     dbl_plot = ac1.checkbox("Double-Plotted (48 h)", value=True)
@@ -440,19 +505,18 @@ with tabs[1]:
     show_mk = ac3.checkbox("Overlay Onsets / Offsets / Acrophases", value=True)
 
     fig_act_plotly = make_actogram_plotly(report, channel=rep, double_plotted=dbl_plot, show_light_overlay=light_ov)
-    st.plotly_chart(fig_act_plotly, use_container_width=True)
+    st.plotly_chart(fig_act_plotly, width="stretch")
 
     st.markdown("**Publication-Style Bar Actogram**")
     fig_act_mpl = make_actogram_mpl(report, channel=rep, double_plotted=dbl_plot, show_light_overlay=light_ov, show_markers=show_mk)
     png_act = figure_to_png_bytes(fig_act_mpl, dpi=160)
-    st.image(png_act, use_container_width=True)
-    st.download_button("Download Actogram PNG", data=png_act, file_name=f"actogram_{rep.channel_name.lower()}.png", mime="image/png")
+    st.image(png_act, width="stretch")
+    st.download_button("Download Actogram PNG", data=png_act, file_name=f"cosirca_actogram_{rep.channel_name.lower()}.png", mime="image/png")
 
-with tabs[2]:
+elif active_section == "Cosinor & Harmonics":
     st.subheader("Cosinor Rhythmometry & Circadian Harmonics")
-    fig_harm = make_cosinor_harmonics_mpl(report, channel=rep)
-    png_harm = figure_to_png_bytes(fig_harm, dpi=160)
-    st.image(png_harm, use_container_width=True)
+    fig_harm_plotly = make_animated_harmonics_plotly(report, channel=rep)
+    st.plotly_chart(fig_harm_plotly, width="stretch")
 
     harm_rows = [
         {
@@ -469,7 +533,7 @@ with tabs[2]:
         }
         for h in rep.cosinor_harmonics.harmonics
     ]
-    st.dataframe(pd.DataFrame(harm_rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(harm_rows), width="stretch", hide_index=True)
 
     if rep.population_cosinor is not None:
         pc = rep.population_cosinor
@@ -479,10 +543,14 @@ with tabs[2]:
             f"Hotelling F = {pc.f_stat:.2f}, p = {pc.p_value:.3e}"
         )
 
-with tabs[3]:
+    if st.checkbox("Render Publication Harmonics PNG", value=False):
+        png_harm = figure_to_png_bytes(make_cosinor_harmonics_mpl(report, channel=rep), dpi=160)
+        st.image(png_harm, width="stretch")
+        st.download_button("Download Harmonics PNG", data=png_harm, file_name=f"cosirca_harmonics_{rep.channel_name.lower()}.png", mime="image/png")
+
+elif active_section == "Periodicity & Bands":
     st.subheader("Periodicity Estimation & Non-Parametric Profile")
-    fig_pg = make_periodogram_mpl(report, channel=rep)
-    st.image(figure_to_png_bytes(fig_pg, dpi=160), use_container_width=True)
+    st.plotly_chart(make_interactive_periodogram_plotly(report, channel=rep), width="stretch")
 
     pg = rep.periodogram
     p_cols = st.columns(4)
@@ -519,17 +587,17 @@ with tabs[3]:
             }
             for b in rb.bands
         ]
-        st.dataframe(pd.DataFrame(band_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(band_rows), width="stretch", hide_index=True)
         st.caption(
             "Rhythms are extracted strongest-first; each is removed together with its harmonics before the next is tested, so "
             "harmonics (e.g. 12 h from a non-sinusoidal 24 h rhythm) and spectral sidelobes are not reported as separate rhythms. "
-            f"Significant = Šidák-adjusted p < {rb.alpha:g} and ≥ {rb.min_percent_variance:g}% of total variance."
+            f"Significant = Šidák-adjusted p < {rb.alpha:g} and >= {rb.min_percent_variance:g}% of total variance."
         )
 
     th = rep.twelve_hour
     if th is not None:
         st.markdown("#### 12 h Rhythm vs. 12 h Harmonic of the Circadian Rhythm")
-        sig = lambda ok: "✅ significant" if ok else "— not significant"  # noqa: E731
+        sig = lambda ok: "Significant" if ok else "Not significant"  # noqa: E731
         st.dataframe(
             pd.DataFrame(
                 [
@@ -553,11 +621,11 @@ with tabs[3]:
                     },
                 ]
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
         st.caption(
-            f"Period difference {th.period_difference_hours:+.2f} h vs. resolution ±{th.resolution_hours:.2f} h → "
+            f"Period difference {th.period_difference_hours:+.2f} h vs. resolution ±{th.resolution_hours:.2f} h -> "
             f"{'distinct from the harmonic' if th.distinct_from_harmonic else 'indistinguishable from the harmonic'}. "
             + th.interpretation
         )
@@ -573,25 +641,30 @@ with tabs[3]:
         b_cols[3].metric("Bimodal Days", f"{bm.days_bimodal} / {bm.days_tested}", f"A2/A1 {bm.h2_to_h1_ratio:.2f}, p={bm.h2_p_value:.1e}", delta_color="off")
 
     if rb is not None or bm is not None or th is not None:
-        st.image(figure_to_png_bytes(make_rhythm_bands_mpl(report, channel=rep), dpi=160), use_container_width=True)
+        st.plotly_chart(make_interactive_rhythm_bands_plotly(report, channel=rep), width="stretch")
 
     if rep.non_parametric is not None:
         prof = rep.non_parametric.hourly_profile
         fig_prof = go.Figure()
         fig_prof.add_trace(go.Bar(x=list(range(24)), y=prof, marker_color=chart_theme.accent, name="24h Mean Profile"))
         fig_prof.update_layout(
-            title="Average 24-Hour Profile (used for IS, IV, M10, L5, RA)",
+            title="Average 24-Hour Profile (IS, IV, M10, L5, RA)",
             xaxis=dict(title="Hour of Day", tickvals=list(range(0, 24, 2))),
             yaxis=dict(title=rep.unit_label),
             height=320,
         )
         apply_plotly_theme(fig_prof)
-        st.plotly_chart(fig_prof, use_container_width=True)
+        st.plotly_chart(fig_prof, width="stretch")
 
-with tabs[4]:
+    if st.checkbox("Render Publication Periodogram & Bands PNGs", value=False):
+        c_p1, c_p2 = st.columns(2)
+        c_p1.image(figure_to_png_bytes(make_periodogram_mpl(report, channel=rep), dpi=160), width="stretch")
+        if rb is not None or bm is not None or th is not None:
+            c_p2.image(figure_to_png_bytes(make_rhythm_bands_mpl(report, channel=rep), dpi=160), width="stretch")
+
+elif active_section == "Circular Stats & Shift":
     st.subheader("Circular Statistics Recorder & Acrophase Shift")
-    fig_circ = make_circular_polar_mpl(report, channel=rep)
-    st.image(figure_to_png_bytes(fig_circ, dpi=160), use_container_width=True)
+    st.plotly_chart(make_animated_polar_plotly(report, channel=rep), width="stretch")
 
     circ_rows = []
     for cs in (rep.circular_acrophase, rep.circular_onset, rep.circular_offset):
@@ -612,35 +685,36 @@ with tabs[4]:
             }
         )
     if circ_rows:
-        st.dataframe(pd.DataFrame(circ_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(circ_rows), width="stretch", hide_index=True)
 
-    fig_shift = make_acrophase_shift_timeline_mpl(report, channel=rep)
-    st.image(figure_to_png_bytes(fig_shift, dpi=160), use_container_width=True)
+    st.plotly_chart(make_interactive_shift_timeline_plotly(report, channel=rep), width="stretch")
 
     if rep.shift_report is not None:
         sr = rep.shift_report
         sc1, sc2, sc3, sc4 = st.columns(4)
         sc1.metric("Mean Daily Shift", f"{sr.mean_daily_shift_hours:+.3f} h/d")
         sc2.metric("Cumulative Shift", f"{sr.cumulative_shift_hours:+.2f} h")
-        sc3.metric("Drift Slope / Implied τ", f"{sr.drift_slope_hours_per_day:+.3f} h/d", f"τ ≈ {sr.implied_tau_from_drift_hours:.2f} h")
+        sc3.metric("Drift Slope / Implied τ", f"{sr.drift_slope_hours_per_day:+.3f} h/d", f"τ ~ {sr.implied_tau_from_drift_hours:.2f} h")
         if sr.activity_light_phase_angle_hours is not None:
-            sc4.metric("Phase Angle ψ (Act − Light)", f"{sr.activity_light_phase_angle_hours:+.2f} h")
+            sc4.metric("Phase Angle ψ (Act - Light)", f"{sr.activity_light_phase_angle_hours:+.2f} h")
 
     st.markdown("**Daily Rhythmometry, Onsets/Offsets & Acrophase Shifts**")
-    st.dataframe(rep.daily_table, use_container_width=True, hide_index=True)
+    st.dataframe(rep.daily_table, width="stretch", hide_index=True)
 
-with tabs[5]:
-    st.subheader("Export Full Excel Workbook & Raw Tables")
+    if st.checkbox("Render Publication Polar & Shift PNGs", value=False):
+        c_s1, c_s2 = st.columns(2)
+        c_s1.image(figure_to_png_bytes(make_circular_polar_mpl(report, channel=rep), dpi=160), width="stretch")
+        c_s2.image(figure_to_png_bytes(make_acrophase_shift_timeline_mpl(report, channel=rep), dpi=160), width="stretch")
+
+else:
+    st.subheader("Export Workbook & Raw Tables")
     st.write(
-        "The generated `.xlsx` workbook contains 6 formatted sheets: `Summary_Report`, `Cosinor_Harmonics`, "
-        "`Daily_Rhythms_Onsets`, `Circular_Statistics` (with live Excel circular formulas), `Periodogram`, and `Binned_Epochs`, "
-        "along with embedded high-resolution Actogram, Harmonics, Polar Rose, Acrophase Shift, and Periodogram charts."
+        "The `.xlsx` workbook contains 6 formatted sheets (`Summary_Report`, `Cosinor_Harmonics`, `Daily_Rhythms_Onsets`, "
+        "`Circular_Statistics` with live Excel circular formulas, `Periodogram`, and `Binned_Epochs`) plus embedded charts."
     )
-    # Fine bins (e.g. 1 s → 1.2M epochs) make these exports take many seconds and hundreds of MB, so past
-    # the threshold build them on request instead of on every rerun. Cache keyed by dataset + config.
     n_epochs = len(report.binned.df)
-    export_key = (id(dataset), repr(cfg), repr(chart_theme))  # charts embedded in Excel follow the theme
-    big_export = n_epochs > LAZY_EXPORT_EPOCHS
+    export_key = (dataset_sig, repr(cfg), repr(chart_theme))
+    big_export = n_epochs > 20_000
     cached = st.session_state.get("export_cache")
     if cached is not None and cached["key"] != export_key:
         cached = st.session_state.export_cache = None
@@ -648,29 +722,28 @@ with tabs[5]:
     if big_export and cached is None:
         st.info(
             f"{n_epochs:,} epochs at {format_bin_size(report.binned.epoch_minutes)} bins. Building the exports takes a while, "
-            f"so they are prepared on request. The Excel `Binned_Epochs` sheet averages epochs down to ≤ 20,000 rows; the CSV keeps all of them."
+            "so they are prepared on request. The Excel `Binned_Epochs` sheet averages epochs down to <= 20,000 rows; the CSV keeps all of them."
         )
         if st.button("Prepare Excel & Binned CSV Exports", type="primary"):
-            with st.spinner("Building exports…"):
+            with st.spinner("Building exports..."):
                 st.session_state.export_cache = cached = {
                     "key": export_key,
                     "xlsx": export_report_to_excel(report),
                     "csv": report.binned.df.to_csv(index=False).encode("utf-8"),
                 }
     elif cached is None:
-        cached = {
-            "key": export_key,
-            "xlsx": export_report_to_excel(report),
-            "csv": report.binned.df.to_csv(index=False).encode("utf-8"),
-        }
-        if big_export:
-            st.session_state.export_cache = cached
+        with st.spinner("Building Excel & CSV exports..."):
+            st.session_state.export_cache = cached = {
+                "key": export_key,
+                "xlsx": export_report_to_excel(report),
+                "csv": report.binned.df.to_csv(index=False).encode("utf-8"),
+            }
 
     if cached is not None:
         st.download_button(
-            label="📊 Download Complete Excel Report (.xlsx)",
+            label="Download Complete Excel Report (.xlsx)",
             data=cached["xlsx"],
-            file_name=f"circadian_report_{datetime.now():%Y%m%d_%H%M}.xlsx",
+            file_name=f"cosirca_report_{datetime.now():%Y%m%d_%H%M}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary",
         )
@@ -679,16 +752,18 @@ with tabs[5]:
     c_dl1.download_button(
         "Download Daily Table (CSV)",
         data=rep.daily_table.to_csv(index=False).encode("utf-8"),
-        file_name=f"daily_rhythms_{rep.channel_name.lower()}.csv",
+        file_name=f"cosirca_daily_{rep.channel_name.lower()}.csv",
         mime="text/csv",
     )
     if cached is not None:
         c_dl2.download_button(
             "Download Binned Epochs (CSV)",
             data=cached["csv"],
-            file_name="binned_circadian_epochs.csv",
+            file_name="cosirca_binned_epochs.csv",
             mime="text/csv",
         )
 
-# Remember the axis labels used by this run's charts so the sidebar can offer them for renaming
-st.session_state["seen_axis_labels"] = seen_axis_labels()
+# Accumulate axis labels seen across visited sections so the sidebar can offer them for renaming
+st.session_state["seen_axis_labels"] = sorted(
+    set(st.session_state.get("seen_axis_labels", [])) | set(seen_axis_labels())
+)
