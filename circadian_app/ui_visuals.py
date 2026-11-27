@@ -70,6 +70,37 @@ def inject_cosirca_css(theme: PlotTheme) -> None:
             background-color: var(--cs-bg);
             color: var(--cs-fg);
         }}
+        header[data-testid="stHeader"] {{
+            background: transparent !important;
+        }}
+        .stApp p, .stApp label, .stApp li, .stApp h1, .stApp h2, .stApp h3, .stApp h4,
+        div[data-testid="stMarkdownContainer"] p,
+        div[data-testid="stCaptionContainer"] {{
+            color: var(--cs-fg) !important;
+        }}
+        div[data-testid="stCaptionContainer"] {{
+            opacity: 0.78;
+        }}
+        .stApp code {{
+            background: var(--cs-surface-alt) !important;
+            color: var(--cs-fg) !important;
+            border: 1px solid var(--cs-border);
+        }}
+        div[data-testid="stButtonGroup"] button,
+        div[data-testid="stSegmentedControl"] button,
+        div[data-testid="stDownloadButton"] button[kind="secondary"],
+        div[data-testid="stButton"] button[kind="secondary"] {{
+            background: var(--cs-surface) !important;
+            color: var(--cs-fg) !important;
+            border: 1px solid var(--cs-border) !important;
+        }}
+        div[data-testid="stButtonGroup"] button[aria-checked="true"],
+        div[data-testid="stButtonGroup"] button[aria-pressed="true"],
+        div[data-testid="stSegmentedControl"] button[aria-checked="true"],
+        div[data-testid="stSegmentedControl"] button[aria-pressed="true"] {{
+            background: {to_rgba(accent, 0.22)} !important;
+            border-color: var(--cs-accent) !important;
+        }}
 
         .block-container {{
             padding-top: 1.2rem !important;
@@ -80,6 +111,11 @@ def inject_cosirca_css(theme: PlotTheme) -> None:
         section[data-testid="stSidebar"] {{
             background: {blend(theme.background, theme.foreground, 0.025) if is_dark else "#f8fafc"} !important;
             border-right: 1px solid var(--cs-border);
+        }}
+        section[data-testid="stSidebar"] p,
+        section[data-testid="stSidebar"] label,
+        section[data-testid="stSidebar"] span {{
+            color: var(--cs-fg) !important;
         }}
         section[data-testid="stSidebar"] h2 {{
             font-size: 0.74rem !important;
@@ -153,13 +189,15 @@ def inject_cosirca_css(theme: PlotTheme) -> None:
             letter-spacing: 0.06em;
             color: var(--cs-muted) !important;
         }}
-        div[data-testid="stMetricValue"] {{
+        div[data-testid="stMetricValue"],
+        div[data-testid="stMetricValue"] div {{
             font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
             font-size: 1.24rem !important;
             font-weight: 600 !important;
             font-variant-numeric: tabular-nums;
             white-space: normal !important;
             line-height: 1.2 !important;
+            color: var(--cs-fg) !important;
         }}
         div[data-testid="stMetricDelta"] {{
             font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
@@ -431,9 +469,9 @@ def make_animated_harmonics_plotly(report: CircadianReport, channel: Optional[Ch
             sliders=[
                 dict(
                     active=len(frames) - 1,
-                    x=0.14,
+                    x=0.20,
                     y=-0.20,
-                    len=0.46,
+                    len=0.41,
                     pad={"t": 0, "b": 0},
                     currentvalue={"prefix": "Harmonics: ", "font": {"size": 11}},
                     steps=[
@@ -470,7 +508,7 @@ def make_interactive_periodogram_plotly(report: CircadianReport, channel: Option
             f"Chi-Square χ² (τ = {pg.best_tau_chi2:.2f} h)",
             f"Cosinor R² Sweep (τ = {pg.best_tau_cosinor:.2f} h)",
         ),
-        horizontal_spacing=0.07,
+        horizontal_spacing=0.11,
     )
 
     fig.add_trace(go.Scatter(x=pg.periods_hours, y=pg.lomb_scargle_power, mode="lines", name="Lomb-Scargle", line=dict(color=th.accent, width=2.0)), row=1, col=1)
@@ -515,7 +553,7 @@ def make_interactive_rhythm_bands_plotly(report: CircadianReport, channel: Optio
             "Rhythm Bands: Single-Cosinor R² Spectrum",
             f"Waveform Bimodality{f': {bm.classification}' if bm else ''}",
         ),
-        horizontal_spacing=0.09,
+        horizontal_spacing=0.12,
     )
 
     if rb is not None:
@@ -689,7 +727,7 @@ def make_interactive_shift_timeline_plotly(report: CircadianReport, channel: Opt
         cols=2,
         specs=[[{"secondary_y": False}, {"secondary_y": True}]],
         subplot_titles=("Daily Phase Trajectory (Acrophase, Onset, Offset)", "Acrophase Shift (+Delay / -Advance)"),
-        horizontal_spacing=0.09,
+        horizontal_spacing=0.14,
     )
 
     days = dtbl["day_index"].to_numpy()

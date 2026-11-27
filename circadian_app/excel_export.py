@@ -105,7 +105,7 @@ def _populate_summary_sheet(ws: openpyxl.worksheet.worksheet.Worksheet, report: 
     ws.title = "Summary_Report"
     ws.views.sheetView[0].showGridLines = True
 
-    ws["A1"] = "Circadian Rhythmometry, Actography & Circular Statistics Report"
+    ws["A1"] = "Circadian Rhythmometry, Actograms & Circular Statistics Report"
     ws["A1"].font = Font(name="Calibri", size=15, bold=True, color="0F172A")
     ws["A2"] = f"Source: {report.source_name}  |  Span: {report.binned.start_time:%Y-%m-%d %H:%M} to {report.binned.end_time:%Y-%m-%d %H:%M} ({report.binned.n_days:.2f} days)  |  Epoch: {format_bin_size(report.binned.epoch_minutes)}"
     ws["A2"].font = Font(name="Calibri", size=10, italic=True, color="475569")

@@ -72,8 +72,10 @@ def apply_plotly_theme(fig: go.Figure) -> go.Figure:
         paper_bgcolor=th.background,
         plot_bgcolor=th.background,
         font=dict(color=th.foreground),
-        legend=dict(bgcolor=to_rgba(th.background, 0.0)),
+        legend=dict(bgcolor=to_rgba(th.background, 0.0), font=dict(color=th.foreground)),
     )
+    if fig.layout.title and fig.layout.title.text:
+        fig.update_layout(title_font_color=th.foreground)
     fig.update_xaxes(gridcolor=th.grid, linecolor=th.muted, zerolinecolor=th.grid)
     fig.update_yaxes(gridcolor=th.grid, linecolor=th.muted, zerolinecolor=th.grid)
 

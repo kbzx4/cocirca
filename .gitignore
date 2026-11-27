@@ -4,3 +4,4 @@ output/
 demo_output/
 *.docx
 .~lock.*
+poster/

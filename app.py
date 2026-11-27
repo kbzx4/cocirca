@@ -275,7 +275,10 @@ with st.sidebar:
 
     st.divider()
     st.header("03 / Appearance")
-    bg_choice = st.selectbox("Graph Background", [*BACKGROUND_PRESETS, "Custom..."], index=3)
+    bg_options = [*BACKGROUND_PRESETS, "Custom..."]
+    _q_bg = st.query_params.get("bg")
+    _bg_idx = bg_options.index(_q_bg) if _q_bg in bg_options else 3
+    bg_choice = st.selectbox("Graph Background", bg_options, index=_bg_idx)
     chart_bg = st.color_picker("Custom background", "#0f172a") if bg_choice == "Custom..." else BACKGROUND_PRESETS[bg_choice]
     palette_name = st.selectbox("Plot Colour Palette", list(PALETTES), index=0)
     base_theme = build_theme(chart_bg, palette_name)
