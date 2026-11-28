@@ -2,6 +2,33 @@
 
 A passive phone activity & ambient light circadian rhythm recorder, cosinor rhythmometry suite, circular statistics analyzer, actogram generator, and Excel report builder.
 
+## CoSirca desktop app (Windows)
+
+The same analysis as a single native Windows program, with no Python, browser or installer needed.
+**[Download the latest release](https://github.com/kbzx4/cosirca/releases/latest)**: `cosirca.exe` (the app) and
+`cosirca-cli.exe` (command line, for scripts and batch runs). Details and build instructions are in
+[desktop/README.md](desktop/README.md).
+
+### Latency
+
+Measured on a real recording: an Empatica E4 wristband worn for 9.1 days (PhysioNet
+[BIG IDEAs](https://physionet.org/content/big-ideas-glycemic-wearable/1.1.2/), participant 001). It is
+five CSV files (accelerometer at 32 Hz, EDA, skin temperature, heart rate, IBI) totalling 1.07 GB and
+26.3 million rows, merged into one recording with five signals. Ryzen 7 7445HS, 32 GB RAM.
+
+| Step | Desktop app | Streamlit app |
+|---|---|---|
+| Import dialog open with all 5 previews (from app launch) | 1.1–1.4 s | — |
+| Import: read, parse and merge all 5 files | 1.7–2.3 s | 55 s |
+| Analysis at 10-minute bins | 0.40 s (all 5 signals) | 2.7 s (main signal) |
+| Analysis at 1-second bins (786,434 bins) | 0.71 s | — |
+| **Import + analysis** | **about 2.5 s** | **58 s** |
+| Peak memory | 3.1 GB | 8.5 GB |
+
+The import preview of the largest file (879 MB accelerometer, first 5,000 rows) appears in 0.13 s.
+Both apps give the same results. The Streamlit app's default upload limit is 200 MB, so files this
+size need the desktop app.
+
 ## Features
 
 - **Data Ingestion & Live Passive Recording** (see [Supported file formats](#supported-file-formats))
