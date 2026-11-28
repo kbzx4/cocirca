@@ -98,8 +98,8 @@ def analyze_periodicity(
     t_valid = t[mask]
     y_valid = y[mask]
 
-    if len(y_valid) < 24:
-        raise ValueError("Need at least 24 valid epochs for periodicity analysis.")
+    if len(y_valid) < 6:
+        raise ValueError("Need at least 6 valid epochs for periodicity analysis.")
 
     periods = np.arange(min_period_hours, max_period_hours + step_hours * 0.5, step_hours)
     ang_freqs = 2.0 * np.pi / periods

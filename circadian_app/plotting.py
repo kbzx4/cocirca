@@ -229,7 +229,7 @@ def make_actogram_mpl(
 
         row_vals = np.nan_to_num(mat[r], nan=0.0)
         heights = np.clip(row_vals / vmax, 0.0, 1.0) * 0.88
-        bar_color = T().activity if rep.channel_name == "Activity" else T().light
+        bar_color = T().activity if rep.channel_name != "Light" else T().light
         bar_label = f"{rep.channel_name} ({rep.unit_label})" if r == 0 else None
         if len(x_hours) <= MPL_ACTOGRAM_MAX_BARS_PER_ROW:
             ax.bar(
@@ -346,7 +346,7 @@ def make_actogram_plotly(
             z=mat[::-1],
             x=x_hours,
             y=day_labels[::-1],
-            colorscale=[[0, T().background], [1, T().activity if rep.channel_name == "Activity" else T().light]],
+            colorscale=[[0, T().background], [1, T().activity if rep.channel_name != "Light" else T().light]],
             colorbar=dict(title=rep.unit_label, len=0.75),
             hovertemplate="Day: %{y}<br>Hour: %{x:.2f} h<br>Value: %{z:.2f}<extra></extra>",
             name=rep.channel_name,

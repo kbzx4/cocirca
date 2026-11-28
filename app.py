@@ -13,6 +13,8 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from circadian_app.excel_export import export_report_to_excel
+from circadian_app.formats import subject_to_dataset
+from circadian_app.upload_ui import FORMAT_HELP, UPLOAD_TYPES, render_review, sources_from_uploads
 from circadian_app.io_loader import (
     PhyphoxLiveRecorder,
     RawSensorDataset,
@@ -88,6 +90,7 @@ def _dataset_signature(ds: RawSensorDataset) -> tuple:
         str(ts.iloc[0]) if len(ts) else "",
         str(ts.iloc[-1]) if len(ts) else "",
         tuple(ds.df.columns),
+        (ds.metadata or {}).get("primary_name"),
     )
 
 
@@ -109,7 +112,7 @@ with st.sidebar:
     st.header("01 / Data Input")
     input_mode = st.radio(
         "Source Mode",
-        ["Synthetic Demo", "Upload Phyphox / CSV / XLSX", "Live Phyphox Remote Recorder"],
+        ["Synthetic Demo", "Upload files", "Live Phyphox Remote Recorder"],
         index=0,
     )
 
@@ -153,31 +156,45 @@ with st.sidebar:
             )
             st.success("Loaded synthetic circadian dataset.")
 
-    elif input_mode == "Upload Phyphox / CSV / XLSX":
-        st.info(
-            "Supports Phyphox `.zip` exports (with `meta/time.csv`), individual `Light.csv` / `Accelerometer.csv`, Sensor Logger, or generic timestamped CSV/XLSX."
-        )
+    elif input_mode == "Upload files":
         uploaded_files = st.file_uploader(
-            "Upload one or more sensor files",
-            type=["zip", "csv", "tsv", "xlsx", "xls"],
+            "Drop data files (several at once is fine)",
+            type=UPLOAD_TYPES,
             accept_multiple_files=True,
+            help=FORMAT_HELP,
         )
-        override_start = st.checkbox("Specify start date/time (if file only has relative Time (s))", value=False)
-        start_dt = None
-        if override_start:
-            d_val = st.date_input("Start Date", value=datetime.now().date())
-            t_val = st.time_input("Start Time", value=dt_time(0, 0))
-            start_dt = datetime.combine(d_val, t_val)
-
-        if uploaded_files and st.button("Load Uploaded File(s)", type="primary", width="stretch"):
-            try:
-                loaded: List[RawSensorDataset] = []
-                for uf in uploaded_files:
-                    loaded.append(load_tabular_sensor_file(uf.getvalue(), filename=uf.name, start_datetime=start_dt))
-                st.session_state.dataset = merge_datasets(loaded)
-                st.success(f"Loaded {len(st.session_state.dataset.df):,} samples from {st.session_state.dataset.source_name}")
-            except Exception as exc:
-                st.error(f"Load failed: {exc}")
+        st.caption(FORMAT_HELP)
+        if uploaded_files:
+            upload_key = tuple((f.name, f.size) for f in uploaded_files)
+            if st.session_state.get("upload_key") != upload_key:
+                st.session_state.upload_key = upload_key
+                st.session_state.import_review = True
+            pending_sources = sources_from_uploads(uploaded_files)
+            if not st.session_state.get("import_review") and st.button("Review import settings", width="stretch"):
+                st.session_state.import_review = True
+                st.rerun()
+        # Subject and main-signal pickers for imported data
+        subjects = st.session_state.get("subjects") or []
+        if subjects:
+            if len(subjects) > 1:
+                idx = st.selectbox(
+                    f"Subject ({len(subjects)})",
+                    range(len(subjects)),
+                    index=min(st.session_state.get("subject_idx", 0), len(subjects) - 1),
+                    format_func=lambda i: subjects[i].name,
+                    help="DAM channels, plate-reader wells, gene rows or separate files",
+                )
+                st.session_state.subject_idx = idx
+            subj = subjects[st.session_state.get("subject_idx", 0)]
+            sig = [c.name for c in subj.signal_channels]
+            primary = st.selectbox("Main signal", sig, index=0, help="Light is analysed separately; pick which other channel to analyse") if len(sig) > 1 else (sig[0] if sig else None)
+            ds_key = (id(subj), primary)
+            if st.session_state.get("subject_ds_key") != ds_key:
+                st.session_state.dataset = subject_to_dataset(subj, primary)
+                st.session_state.subject_ds_key = ds_key
+            st.caption(f"**{subj.format}** · {', '.join(subj.describe())}")
+            if len(subjects) > 1 and st.button(f"Analyse all {len(subjects)} subjects", width="stretch"):
+                st.session_state.run_batch = True
 
     else:
         st.info(
@@ -337,7 +354,26 @@ with st.sidebar:
 
 inject_cosirca_css(chart_theme)
 
+# ---- Import review (main area) ------------------------------------------------------------------
+if input_mode == "Upload files" and uploaded_files and st.session_state.get("import_review"):
+    picked = render_review(pending_sources)
+    if picked is None:
+        st.stop()
+    imported_subjects, import_notes = picked
+    if not imported_subjects:
+        st.error("Nothing to import.")
+        st.stop()
+    st.session_state.subjects = imported_subjects
+    st.session_state.subject_idx = 0
+    st.session_state.subject_ds_key = None
+    st.session_state.import_notes = import_notes
+    st.session_state.import_review = False
+    st.session_state.batch_table = None
+    st.rerun()
+
 dataset: RawSensorDataset = st.session_state.dataset
+for _n in (dataset.metadata or {}).get("notes", [])[:6]:
+    st.sidebar.caption(f"• {_n}")
 
 _ts = pd.to_datetime(dataset.df["timestamp"]).sort_values()
 _span_sec = (_ts.iloc[-1] - _ts.iloc[0]).total_seconds() if len(_ts) > 1 else 0.0
@@ -347,10 +383,10 @@ if np.isfinite(_src_dt_sec) and epoch_sec < _src_dt_sec * 0.99:
         f"Note: The source is sampled about every {format_bin_size(_src_dt_sec / 60.0)}, so bins of "
         f"{format_bin_size(epoch_min)} are mostly empty. Gaps of up to 60 min are interpolated, which adds no real detail."
     )
-if _span_sec > 0 and _span_sec / epoch_sec < 24:
+if _span_sec > 0 and _span_sec / epoch_sec < 8:
     st.error(
         f"This {_span_sec / 86400:.1f}-day recording yields only {int(_span_sec // epoch_sec)} bins at "
-        f"{format_bin_size(epoch_min)}; analysis needs at least 24. Choose a smaller bin size."
+        f"{format_bin_size(epoch_min)}; analysis needs at least 8. Choose a smaller bin size."
     )
     st.stop()
 
@@ -370,6 +406,34 @@ cfg = CircadianAnalysisConfig(
     split_day=int(split_day) if split_day is not None else None,
 )
 
+# ---- Batch: every imported subject with the current settings ---------------------------------------
+if st.session_state.pop("run_batch", False):
+    rows = []
+    prog = st.progress(0.0, text="Analysing all subjects…")
+    subs = st.session_state.get("subjects") or []
+    for i, s in enumerate(subs):
+        try:
+            r = run_full_analysis(subject_to_dataset(s), cfg).primary
+            c1 = r.cosinor_single
+            rows.append({
+                "subject": s.name, "signal": r.channel_name, "unit": r.unit_label, "tau_h": round(r.period_used_hours, 2),
+                "mesor": round(c1.mesor, 4), "amplitude": round(c1.amplitude, 4), "acrophase": c1.acrophase_hhmm, "r2": round(c1.r2, 4), "p": c1.p_value,
+                "bimodality": r.bimodality.classification if r.bimodality else "", "dominant_band": (r.rhythm_bands.dominant_band or "none") if r.rhythm_bands else "",
+            })
+        except Exception as exc:  # noqa: BLE001
+            rows.append({"subject": s.name, "error": str(exc).splitlines()[0]})
+        prog.progress((i + 1) / max(1, len(subs)), text=f"Analysed {i + 1} of {len(subs)}")
+    prog.empty()
+    st.session_state.batch_table = pd.DataFrame(rows)
+if st.session_state.get("batch_table") is not None:
+    with st.expander(f"All subjects ({len(st.session_state.batch_table)})", expanded=True):
+        bt = st.session_state.batch_table
+        if "p" in bt:
+            sig = int((pd.to_numeric(bt["p"], errors="coerce") < 0.05).sum())
+            st.caption(f"Significant 24 h-band rhythm (p < 0.05) in {sig} of {len(bt)} · median amplitude {pd.to_numeric(bt.get('amplitude'), errors='coerce').median():.3f} · median R² {pd.to_numeric(bt.get('r2'), errors='coerce').median():.3f}")
+        st.dataframe(bt, hide_index=True, width="stretch")
+        st.download_button("Download summary CSV", bt.to_csv(index=False).encode("utf-8-sig"), "subjects_summary.csv", "text/csv")
+
 dataset_sig = _dataset_signature(dataset)
 try:
     report: CircadianReport = _cached_analysis(dataset, dataset_sig, cfg)
@@ -377,18 +441,15 @@ except Exception as exc:
     st.error(f"Analysis failed: {exc}")
     st.stop()
 
-avail_channels = []
-if report.activity_report is not None:
-    avail_channels.append("Activity")
-if report.light_report is not None:
-    avail_channels.append("Light")
+channel_reports = {r.channel_name: r for r in (report.activity_report, report.light_report) if r is not None}
+avail_channels = list(channel_reports)
 
 selected_ch_name = (
     st.radio("Active Inspection Channel", avail_channels, horizontal=True)
     if len(avail_channels) > 1
     else avail_channels[0]
 )
-rep = report.activity_report if selected_ch_name == "Activity" else report.light_report
+rep = channel_reports[selected_ch_name]
 
 render_cosirca_header(report, rep, format_bin_size(report.binned.epoch_minutes))
 

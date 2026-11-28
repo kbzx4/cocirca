@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from circadian_app.excel_export import export_report_to_excel
+from circadian_app.formats import ImportOptions, combine, expand, parse_source, subject_to_dataset
 from circadian_app.io_loader import (
     generate_synthetic_circadian_data,
     load_tabular_sensor_file,
@@ -74,6 +75,12 @@ def main() -> None:
     parser.add_argument("--circadian-min", type=float, default=20.0, help="Ultradian/circadian boundary, hours (default: 20).")
     parser.add_argument("--circadian-max", type=float, default=28.0, help="Circadian/infradian boundary, hours (default: 28).")
     parser.add_argument("--start-datetime", default=None, help="Optional ISO start datetime for relative Time(s) files.")
+    parser.add_argument("--date-order", default="auto", choices=["auto", "dmy", "mdy", "ymd"], help="Date order for ambiguous dates (default: auto-detect).")
+    parser.add_argument("--time-unit", default=None, choices=["ms", "s", "min", "h", "d"], help="Unit of a numeric relative time column.")
+    parser.add_argument("--interval", type=float, default=None, help="Sampling interval in seconds for files without time stamps.")
+    parser.add_argument("--subject", type=int, default=1, help="Which subject to analyse in multi-subject inputs (DAM channels, wells, genes, archives).")
+    parser.add_argument("--signal", default=None, help="Channel analysed as the main signal (e.g. 'Temperature'); default activity.")
+    parser.add_argument("--merge", action="store_true", help="Merge all input files into one recording.")
 
     args = parser.parse_args()
     out_dir = Path(args.output_dir)
@@ -110,8 +117,24 @@ def main() -> None:
     if args.demo or not args.inputs:
         dataset = generate_synthetic_circadian_data(days=14, epoch_minutes=args.epoch_min, shift_day=8, shift_hours=3.5)
     else:
-        loaded = [load_tabular_sensor_file(p, start_datetime=start_dt) for p in args.inputs]
-        dataset = merge_datasets(loaded)
+        opts = ImportOptions(start=start_dt, date_order=args.date_order, interval_s=args.interval, time_unit=args.time_unit)
+        parsed = []
+        for p in args.inputs:
+            for src in expand(Path(p).name, Path(p).read_bytes()):
+                try:
+                    parsed.append(parse_source(src, opts))
+                except Exception as exc:  # noqa: BLE001
+                    print(f"skipped {src.name}: {str(exc).splitlines()[0]}")
+        if not parsed:
+            parser.error("none of the inputs could be read")
+        subjects, notes = combine(parsed, "merge" if args.merge else "auto")
+        if args.subject > len(subjects):
+            parser.error(f"--subject {args.subject}: the input has {len(subjects)} subject(s)")
+        subj = subjects[args.subject - 1]
+        print(f"Format: {subj.format} | channels: {', '.join(subj.describe())}" + (f" | subject {args.subject} of {len(subjects)}" if len(subjects) > 1 else ""))
+        for n in notes + subj.notes:
+            print(f"Note: {n}")
+        dataset = subject_to_dataset(subj, args.signal)
 
     cfg = CircadianAnalysisConfig(
         epoch_minutes=args.epoch_min,

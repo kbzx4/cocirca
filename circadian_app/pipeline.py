@@ -253,8 +253,8 @@ def _analyze_single_channel(
         daily_merged,
         split_day=cfg.split_day,
         period_hours=24.0,
-        light_acrophase_hours=other_acrophase_hours if channel_name == "Activity" else cos_single.acrophase_hours,
-        activity_acrophase_hours=cos_single.acrophase_hours if channel_name == "Activity" else other_acrophase_hours,
+        light_acrophase_hours=other_acrophase_hours if channel_name != "Light" else cos_single.acrophase_hours,
+        activity_acrophase_hours=cos_single.acrophase_hours if channel_name != "Light" else other_acrophase_hours,
     )
     if shift_rep is not None:
         daily_merged = shift_rep.daily_shift_df
@@ -306,13 +306,18 @@ def run_full_analysis(
         light_unit = "log10(lux + 1)" if cfg.use_log_lux else "lux"
         light_report = _analyze_single_channel(binned, "Light", light_col, light_unit, cfg)
 
-    if binned.has_activity and binned.df["activity"].notna().sum() >= 24:
+    if binned.has_activity and binned.df["activity"].notna().sum() >= 8:
         light_acro = light_report.cosinor_single.acrophase_hours if light_report is not None else None
         # milli-g only applies when activity was derived from accelerometer axes; precomputed counts keep their own units
         from_accel = all(c in dataset.df.columns and dataset.df[c].notna().any() for c in ("ax", "ay", "az"))
         act_unit = "milli-g" if from_accel and cfg.activity_method in ("enmo", "mad") else "activity units"
+        # The importer may route heart rate, temperature or another signal into the main channel
+        meta = dataset.metadata or {}
+        act_name = meta.get("primary_name") or "Activity"
+        if meta.get("primary_unit") and act_name != "Activity":
+            act_unit = meta["primary_unit"]
         activity_report = _analyze_single_channel(
-            binned, "Activity", "activity", act_unit, cfg, other_acrophase_hours=light_acro
+            binned, act_name, "activity", act_unit, cfg, other_acrophase_hours=light_acro
         )
 
         # Attach Activity-Light phase angle onto daily table when both exist

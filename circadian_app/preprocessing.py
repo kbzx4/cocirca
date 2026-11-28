@@ -71,8 +71,10 @@ def compute_sample_activity(
     if is_linear or method == "vector_magnitude":
         return vm
 
+    from .formats import accel_g_units
+
     med_vm = float(vm.dropna().median()) if vm.notna().any() else 9.80665
-    gravity = 1.0 if 0.5 < med_vm < 2.0 else 9.80665
+    gravity = accel_g_units(med_vm)[0]
 
     if method == "enmo":
         # Euclidean Norm Minus One (standard actigraphy metric, scaled to milli-g or m/s^2)

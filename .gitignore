@@ -5,3 +5,6 @@ demo_output/
 *.docx
 .~lock.*
 poster/
+desktop/target/
+bench_data/
+rr-interval-healthy-subjects-*.zip
