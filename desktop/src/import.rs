@@ -1213,8 +1213,10 @@ fn parse_single_column(text: &str, name: &str, opts: &ImportOptions, row_limit: 
 }
 
 // ------------------------------------------------------------------------------------------------
-// Actiwatch / CamNtech AWD
+// AWD: Actiwatch / CamNtech and Actimetrics ClockLab
 // ------------------------------------------------------------------------------------------------
+
+const AWD_FORMAT: &str = "AWD (Actiwatch / CamNtech / ClockLab)";
 
 fn is_awd(head: &[&str]) -> bool {
     static D: OnceLock<Regex> = OnceLock::new();
@@ -1229,45 +1231,60 @@ fn parse_awd(text: &str, name: &str, opts: &ImportOptions, row_limit: Option<usi
     }
     let start = parse_dt(&format!("{} {}", lines[1].trim(), lines[2].trim()), Dmy::Dmy);
     let code = lines[3].trim();
+    // Actiwatch's sub-15 s codes; otherwise the code is the interval in minutes × 4 (ClockLab's rule,
+    // which also matches Actiwatch's 1 = 15 s, 4 = 1 min, 20 = 5 min …)
     let epoch = match code {
-        "1" => Some(15.0),
-        "2" => Some(30.0),
-        "4" => Some(60.0),
-        "8" => Some(120.0),
-        "20" => Some(300.0),
         "81" => Some(2.0),
         "C1" | "c1" => Some(5.0),
-        _ => None,
+        _ => code.parse::<u32>().ok().filter(|&n| n > 0).map(|n| n as f64 * 15.0),
     };
     let step = opts.interval_s.or(epoch).ok_or(format!("{name}: unknown AWD epoch code '{code}'. Set the sampling interval in the import options."))?;
     let base = opts.start.or(start).unwrap_or_else(today_midnight_ms);
-    let mut vals = Vec::new();
+    // "count" or "count,light" (ClockLab) or "count , M" (Actiwatch marker); negative = missing
+    let missing = |v: f64| if v < 0.0 { f64::NAN } else { v };
+    let (mut vals, mut light) = (Vec::new(), Vec::new());
+    let mut gaps = 0usize;
     for l in &lines[7..] {
         if l.trim().is_empty() {
             continue;
         }
-        vals.push(num(l.split([',', ' ', '\t']).next().unwrap_or(""), false));
+        let mut f = l.split([',', ' ', '\t']).filter(|x| !x.is_empty());
+        let v = num(f.next().unwrap_or(""), false);
+        gaps += (v < 0.0) as usize;
+        vals.push(missing(v));
+        light.push(missing(f.next().map_or(f64::NAN, |x| num(x, false))));
         if row_limit.is_some_and(|r| vals.len() >= r) {
             break;
         }
     }
+    let has_light = light.iter().any(|x| x.is_finite());
     let t: Vec<i64> = (0..vals.len()).map(|i| base + (i as f64 * step * 1000.0).round() as i64).collect();
     let n = vals.len();
+    let mut channels = vec![Channel::new(Role::Activity, "Activity", "counts", vals)];
+    let mut columns = vec![ColumnInfo { name: "Activity counts".into(), role: ColRole::Data(Role::Activity), example: lines[7].trim().into() }];
+    if has_light {
+        channels.push(Channel::new(Role::Light, "Light", "", light));
+        columns.push(ColumnInfo { name: "Light (2nd value)".into(), role: ColRole::Data(Role::Light), example: String::new() });
+    }
+    let mut notes = vec![format!("Subject '{}', start {}, epoch {} (code {code}).", lines[0].trim(), ms_to_naive(base).format("%Y-%m-%d %H:%M"), format_duration(step))];
+    if gaps > 0 {
+        notes.push(format!("{gaps} negative values read as missing data."));
+    }
     let d = RawDataset {
         name: if lines[0].trim().is_empty() { name.into() } else { format!("{} ({})", name, lines[0].trim()) },
-        format: "Actiwatch / CamNtech AWD".into(),
+        format: AWD_FORMAT.into(),
         t_ms: t,
-        channels: vec![Channel::new(Role::Activity, "Activity", "counts", vals)],
+        channels,
         ..Default::default()
     };
     Ok(Parsed {
         source: name.into(),
-        format: "Actiwatch / CamNtech AWD".into(),
-        notes: vec![format!("Subject '{}', start {}, epoch {} (code {code}).", lines[0].trim(), ms_to_naive(base).format("%Y-%m-%d %H:%M"), format_duration(step))],
+        format: AWD_FORMAT.into(),
+        notes,
         preview: preview_lines(&lines[..lines.len().min(40)]),
         header_line: None,
         data_line: 7,
-        columns: vec![ColumnInfo { name: "Activity counts".into(), role: ColRole::Data(Role::Activity), example: lines[7].trim().into() }],
+        columns,
         time_desc: format!("Header start time + {} epochs", format_duration(step)),
         rows: n,
         truncated: row_limit.is_some_and(|r| n >= r),
@@ -2760,6 +2777,48 @@ mod tests {
         assert!((hr[0] - 75.0).abs() < 1e-9 && hr[30].is_nan());
         assert_eq!(d.channel(Role::HeartRate).unwrap().name, "Heart rate (IBI)");
         assert_eq!(d.notes.iter().filter(|n| n.starts_with("RR intervals")).count(), 1);
+    }
+
+    #[test]
+    fn clocklab_awd() {
+        // Actimetrics text format: interval 24 = 6 min, optional ",light", negative = missing
+        let mut t = String::from("Taconic2
+21-nov-2000
+00:00
+24
+0
+9wild
+M
+");
+        for i in 0..300 {
+            t += &if i == 5 { "-1,0
+".to_string() } else { format!("{},{}
+", 100 + i % 7, if i % 240 < 120 { 300 } else { 0 }) };
+        }
+        let p = parse("Sample 5.awd", &t);
+        let d = &p.subjects[0];
+        assert_eq!(p.format, AWD_FORMAT);
+        assert_eq!(d.t_ms[1] - d.t_ms[0], 360_000);
+        assert_eq!(d.channels.len(), 2);
+        assert_eq!(d.channels[1].role, Role::Light);
+        assert!(d.channels[0].values[5].is_nan());
+        assert_eq!(d.channels[1].values[0], 300.0);
+        // Actiwatch: "count , M" marker column is not light
+        let mut a = String::from("P007
+05-Feb-2024
+08:30
+4
+41
+V3021
+F
+");
+        for i in 0..50 {
+            a += &format!("{} , M
+", i);
+        }
+        let p = parse("x.awd", &a);
+        assert_eq!(p.subjects[0].channels.len(), 1);
+        assert_eq!(p.subjects[0].t_ms[1] - p.subjects[0].t_ms[0], 60_000);
     }
 
     #[test]

@@ -30,7 +30,7 @@ class TestExampleFiles(unittest.TestCase):
         "actigraph_actilife_60s.csv": ("ActiGraph ActiLife CSV", 1, {"activity", "light"}),
         "actiware_export.csv": ("Philips Respironics Actiware", 1, {"activity", "light"}),
         "acttrust_condor.txt": ("Condor ActTrust", 1, {"activity", "light", "temperature"}),
-        "actiwatch_P007.awd": ("Actiwatch / CamNtech AWD", 1, {"activity"}),
+        "actiwatch_P007.awd": ("AWD (Actiwatch / CamNtech / ClockLab)", 1, {"activity"}),
         "Monitor7.txt": ("TriKinetics DAM monitor", 30, {"activity", "light"}),
         "hobo_pendant.csv": ("HOBO logger (HOBOware CSV)", 1, {"temperature", "light"}),
         "ibutton_wrist_temp.csv": ("iButton / Thermochron (OneWireViewer)", 1, {"temperature"}),
@@ -122,6 +122,15 @@ class TestLayouts(unittest.TestCase):
         self.assertAlmostEqual(float(s.channel("accel_z").values[0]), 9.8)
         c = parse("EDA_001.csv", "datetime, eda\n2020-02-13 15:28:50.000,0.1\n2020-02-13 15:28:50.250,0.2\n2020-02-13 15:28:50.500,0.3\n").subjects[0].channels[0]
         self.assertEqual((c.name, c.unit), ("EDA", "µS"))
+
+    def test_clocklab_awd(self) -> None:
+        lines = ["Taconic2", "21-nov-2000", "00:00", "24", "0", "9wild", "M"]
+        lines += ["-1,0" if i == 5 else f"{100 + i % 7},{300 if i % 240 < 120 else 0}" for i in range(300)]
+        s = parse("Sample 5.awd", "\n".join(lines) + "\n").subjects[0]
+        self.assertEqual((s.t[1] - s.t[0]).total_seconds(), 360)
+        self.assertEqual([c.role for c in s.channels], ["activity", "light"])
+        self.assertTrue(np.isnan(s.channels[0].values[5]))
+        self.assertEqual(s.channels[1].values[0], 300)
 
     def test_timestamped_ibi_in_seconds(self) -> None:
         # BIG IDEAs / Empatica re-export: datetime + IBI in seconds, plus an extra column; one artifact

@@ -55,7 +55,7 @@ Both the Streamlit app (`circadian_app/formats.py`) and the desktop app (`deskto
 
 | Area | Formats |
 |---|---|
-| Actigraphy | ActiGraph ActiLife CSV (with or without the column-name row; `.agd` in the Streamlit app), Philips Respironics Actiware (off-wrist / excluded epochs masked), Condor ActTrust (PIM, light, wrist temperature; decimal commas), Actiwatch / CamNtech `.awd`, GENEActiv CSV, Axivity CSV, MotionWare exports |
+| Actigraphy | ActiGraph ActiLife CSV (with or without the column-name row; `.agd` in the Streamlit app), Philips Respironics Actiware (off-wrist / excluded epochs masked), Condor ActTrust (PIM, light, wrist temperature; decimal commas), Actiwatch / CamNtech and Actimetrics ClockLab `.awd` (ClockLab light column read; negative values = gaps), GENEActiv CSV, Axivity CSV, MotionWare exports |
 | Animal activity | TriKinetics DAM monitor files: each of the 32 channels is a subject; the light column is used when it toggles. Running-wheel, beam-break and generic counts |
 | Light & temperature | HOBO (HOBOware CSV), iButton / Thermochron (OneWireViewer), any lux / °C / °F column |
 | Heart | RR / IBI / NN interval files (heart rate = 60000 / RR, artifacts and ectopic beats rejected), Polar CSV, Empatica E4 (ACC, TEMP, HR, EDA, IBI) |

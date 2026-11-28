@@ -4,7 +4,7 @@ Mirrors the desktop app's importer (desktop/src/import.rs). Recognised besides a
 time column:
 
 * Actigraphy: ActiGraph ActiLife CSV, Philips Respironics Actiware, Condor ActTrust, Actiwatch / CamNtech
-  ``.awd``, GENEActiv CSV, Axivity CSV, MotionWare-style exports; ActiGraph ``.agd`` (SQLite)
+  ``.awd`` (also Actimetrics ClockLab), GENEActiv CSV, Axivity CSV, MotionWare-style exports; ActiGraph ``.agd`` (SQLite)
 * Locomotor activity: TriKinetics DAM monitor files (one subject per channel), wheel / beam-break counts
 * Loggers: HOBO (HOBOware CSV), iButton / Thermochron (OneWireViewer)
 * Heart: RR / IBI / NN interval files, Polar CSV, Empatica E4 (ACC, TEMP, HR, EDA, IBI)
@@ -668,18 +668,37 @@ def _single_column(text: str, name: str, opts: ImportOptions, lines: List[str]) 
     return pf
 
 
+AWD_FORMAT = "AWD (Actiwatch / CamNtech / ClockLab)"
+
+
 def _awd(lines: List[str], name: str, opts: ImportOptions) -> ParsedFile:
-    epoch = {"1": 15, "2": 30, "4": 60, "8": 120, "20": 300, "81": 2, "C1": 5, "c1": 5}.get(lines[3].strip())
+    """Actiwatch / CamNtech and Actimetrics ClockLab text AWD: 7 header lines, then "count" per line,
+    optionally ",light" (ClockLab) or " , M" (Actiwatch marker). Negative values are missing data."""
+    code = lines[3].strip()
+    # Actiwatch's sub-15 s codes; otherwise the code is minutes x 4 (ClockLab; matches Actiwatch 1/2/4/8/20)
+    epoch = {"81": 2, "C1": 5, "c1": 5}.get(code) or (int(code) * 15 if code.isdigit() and int(code) > 0 else None)
     step = opts.interval_s or epoch
     if not step:
-        raise ValueError(f"{name}: unknown AWD epoch code '{lines[3].strip()}'. Set the sampling interval.")
+        raise ValueError(f"{name}: unknown AWD epoch code '{code}'. Set the sampling interval.")
     start = opts.start or pd.to_datetime(f"{lines[1].strip()} {lines[2].strip()}", dayfirst=True, errors="coerce")
     start = start if start is not None and not pd.isna(start) else _today()
-    vals = pd.to_numeric(pd.Series([re.split(r"[ ,\t]", ln.strip())[0] for ln in lines[7:] if ln.strip()]), errors="coerce").to_numpy(dtype=float)
+    fields = [[x for x in re.split(r"[ ,\t]", ln.strip()) if x] for ln in lines[7:] if ln.strip()]
+    vals = pd.to_numeric(pd.Series([f[0] if f else "" for f in fields]), errors="coerce").to_numpy(dtype=float, copy=True)
+    light = pd.to_numeric(pd.Series([f[1] if len(f) > 1 else "" for f in fields]), errors="coerce").to_numpy(dtype=float, copy=True)
+    gaps = int((vals < 0).sum())
+    vals[vals < 0] = np.nan
+    light[light < 0] = np.nan
     t = pd.Timestamp(start) + pd.to_timedelta(np.arange(len(vals)) * step, unit="s")
-    subj = Subject(f"{name} ({lines[0].strip()})" if lines[0].strip() else name, "Actiwatch / CamNtech AWD", pd.DatetimeIndex(t), [Channel("activity", "Activity", "counts", vals)])
-    return ParsedFile(name, subj.format, [subj], [f"Subject '{lines[0].strip()}', start {pd.Timestamp(start):%Y-%m-%d %H:%M}, epoch {fmt_duration(step)}."], lines[:40], None, 7,
-                      [ColumnInfo("Activity counts", "activity", lines[7].strip() if len(lines) > 7 else "")], f"Header start time + {fmt_duration(step)} epochs", rows=len(vals))
+    chans = [Channel("activity", "Activity", "counts", vals)]
+    cols = [ColumnInfo("Activity counts", "activity", lines[7].strip() if len(lines) > 7 else "")]
+    if np.isfinite(light).any():
+        chans.append(Channel("light", "Light", "", light))
+        cols.append(ColumnInfo("Light (2nd value)", "light", ""))
+    subj = Subject(f"{name} ({lines[0].strip()})" if lines[0].strip() else name, AWD_FORMAT, pd.DatetimeIndex(t), chans)
+    notes = [f"Subject '{lines[0].strip()}', start {pd.Timestamp(start):%Y-%m-%d %H:%M}, epoch {fmt_duration(step)} (code {code})."]
+    if gaps:
+        notes.append(f"{gaps} negative values read as missing data.")
+    return ParsedFile(name, subj.format, [subj], notes, lines[:40], None, 7, cols, f"Header start time + {fmt_duration(step)} epochs", rows=len(vals))
 
 
 def _empatica(lines: List[str], name: str, stem: str) -> ParsedFile:

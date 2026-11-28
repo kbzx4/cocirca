@@ -25,7 +25,7 @@ from .formats import (
 
 UPLOAD_TYPES = ["csv", "tsv", "txt", "dat", "awd", "agd", "xlsx", "xls", "xlsm", "ods", "json", "jsonl", "xml", "zip", "gz"]
 FORMAT_HELP = (
-    "Actigraphy: ActiGraph (CSV, .agd), Philips Actiware, Condor ActTrust, Actiwatch .awd, GENEActiv, Axivity · "
+    "Actigraphy: ActiGraph (CSV, .agd), Philips Actiware, Condor ActTrust, Actiwatch / ClockLab .awd, GENEActiv, Axivity · "
     "Animal activity: TriKinetics DAM, wheel / beam-break counts · Loggers: HOBO, iButton · "
     "Heart: RR/IBI intervals, Polar, Empatica E4 · Phones & wearables: Phyphox, Sensor Logger, Apple Health, Fitbit · "
     "Lab tables: plate-reader / bioluminescence wells, ZT/CT gene-expression time courses · Archives: .zip, .gz"
