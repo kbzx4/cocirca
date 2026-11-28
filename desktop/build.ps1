@@ -1,4 +1,4 @@
-# Build CoCirca desktop (release). Usage:  .\build.ps1        (from the desktop folder)
+# Build CoSirca desktop (release). Usage:  .\build.ps1        (from the desktop folder)
 # Needs Rust (rustup.rs). With the GNU toolchain, MinGW binutils (dlltool) must be on PATH;
 # WinLibs from winget provides them:  winget install BrechtSanders.WinLibs.POSIX.UCRT
 $ErrorActionPreference = 'Stop'
@@ -10,7 +10,7 @@ try {
     cargo build --release
     cargo test --release
     Write-Host "`nBuilt:" -ForegroundColor Green
-    Get-ChildItem target\release\cocirca.exe, target\release\cocirca-cli.exe | ForEach-Object { "  $($_.FullName)  ($([math]::Round($_.Length/1MB,1)) MB)" }
+    Get-ChildItem target\release\cosirca.exe, target\release\cosirca-cli.exe | ForEach-Object { "  $($_.FullName)  ($([math]::Round($_.Length/1MB,1)) MB)" }
 } finally {
     Pop-Location
 }

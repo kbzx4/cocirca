@@ -1,12 +1,12 @@
 [package]
-name = "cocirca"
+name = "cosirca"
 version = "0.1.0"
 edition = "2021"
-description = "CoCirca desktop: circadian rhythmometry, actograms, rhythm bands, bimodality and circular statistics"
+description = "CoSirca desktop: circadian rhythmometry, actograms, rhythm bands, bimodality and circular statistics"
 license = "MIT"
 
 [[bin]]
-name = "cocirca"
+name = "cosirca"
 path = "src/main.rs"
 
 [dependencies]

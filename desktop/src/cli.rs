@@ -1,15 +1,15 @@
-//! Headless command-line runner (the `cocirca-cli` console binary).
+//! Headless command-line runner (the `cosirca-cli` console binary).
 
 use crate::{data, export, import, pipeline, stats, theme};
 use std::path::PathBuf;
 
-pub const USAGE: &str = "cocirca-cli [FILES...] [--demo] [--bin-sec N] [--harmonics N] [--period-min H] [--period-max H]
+pub const USAGE: &str = "cosirca-cli [FILES...] [--demo] [--bin-sec N] [--harmonics N] [--period-min H] [--period-max H]
             [--circadian-min H] [--circadian-max H] [--tau fixed24|ls|chi2|cosinor|H]
             [--onsets template|threshold|cosinor] [--split-day N] [--start \"YYYY-MM-DD HH:MM\"]
             [--excel OUT.xlsx] [--csv OUT.csv]
    import: [--date-order dmy|mdy|ymd] [--time-unit ms|s|min|h|d] [--interval SECONDS] [--header-line N]
             [--layout channels|subjects] [--subject N] [--merge|--separate]
-       cocirca-cli --batch FILE|ARCHIVE.zip|FOLDER [analysis & import options] [--out summary.csv]
+       cosirca-cli --batch FILE|ARCHIVE.zip|FOLDER [analysis & import options] [--out summary.csv]
             analyses every subject (file, DAM channel, plate well, gene row …) separately, in parallel";
 
 fn parse_start(s: &str) -> Result<i64, String> {
@@ -131,7 +131,7 @@ fn run_batch(path: &std::path::Path, cfg: &pipeline::Config, opts: &import::Impo
     let mut lat: Vec<f64> = results.iter().filter(|r| r.1.is_ok()).map(|r| r.2).collect();
     lat.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let ok = lat.len();
-    println!("=== CoCirca batch: {} ===", path.display());
+    println!("=== CoSirca batch: {} ===", path.display());
     println!("Formats: {}", formats.join(", "));
     println!(
         "{} files → {} subjects | read+parse {:.0} ms | {} analysed, {} failed | wall {:.0} ms | per-subject analysis: median {:.1} ms, max {:.1} ms",
@@ -263,7 +263,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     };
     let load_ms = t_load.elapsed().as_secs_f64() * 1000.0;
     let rep = pipeline::run_analysis(&ds, &cfg)?;
-    println!("=== CoCirca analysis ({}) ===", rep.source);
+    println!("=== CoSirca analysis ({}) ===", rep.source);
     if !ds.format.is_empty() {
         println!("Format: {} | channels: {}", ds.format, ds.describe_channels().join(", "));
     }

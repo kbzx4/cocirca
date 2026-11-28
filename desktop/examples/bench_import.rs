@@ -4,7 +4,7 @@
 //!
 //! `scripts/fetch_big_ideas.sh` downloads a 1 GB Empatica E4 recording (PhysioNet BIG IDEAs, participant 001)
 //! to test with.
-use cocirca::{data, export, import, pipeline, theme};
+use cosirca::{data, export, import, pipeline, theme};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 

@@ -1,4 +1,4 @@
-# CoCirca desktop (Rust)
+# CoSirca desktop (Rust)
 
 A native Windows desktop version of Circadian Phyphox Studio. It does the same analysis as the Python
 app, gives the same numbers, and is 15–50× faster. It is a single 7.5 MB executable with no Python,
@@ -7,9 +7,9 @@ browser or server needed.
 ## Run
 
 ```
-desktop\target\release\cocirca.exe                 # GUI
-desktop\target\release\cocirca.exe data.csv        # GUI, opening a file
-desktop\target\release\cocirca-cli.exe data.csv --bin-sec 600 --excel report.xlsx --csv epochs.csv
+desktop\target\release\cosirca.exe                 # GUI
+desktop\target\release\cosirca.exe data.csv        # GUI, opening a file
+desktop\target\release\cosirca-cli.exe data.csv --bin-sec 600 --excel report.xlsx --csv epochs.csv
 ```
 
 In the GUI, open files from the toolbar (Ctrl+O), click the welcome screen's drop zone, or drag files
@@ -31,7 +31,7 @@ searchable subject picker and **Analyse all subjects**, which fills a summary ta
 
 Every channel in a file is analysed: activity, light, heart rate, temperature, and other signals.
 The full list of supported formats is in the main [README](../README.md#supported-file-formats).
-`cocirca-cli` accepts the same import options (`--date-order`, `--time-unit`, `--interval`,
+`cosirca-cli` accepts the same import options (`--date-order`, `--time-unit`, `--interval`,
 `--header-line`, `--layout`, `--subject`, `--merge`/`--separate`), and `--batch` runs every subject
 of a file, archive or folder.
 
@@ -46,7 +46,7 @@ An archive or folder of separate recordings (one per person) is never merged. Us
 analyses each file in parallel and writes one summary row per file:
 
 ```
-cocirca-cli --batch rr-interval-healthy-subjects-1.0.0.zip --tau fixed24 --bin-sec 600 --out summary.csv
+cosirca-cli --batch rr-interval-healthy-subjects-1.0.0.zip --tau fixed24 --bin-sec 600 --out summary.csv
 ```
 
 ## Features
@@ -70,7 +70,7 @@ cocirca-cli --batch rr-interval-healthy-subjects-1.0.0.zip --tau fixed24 --bin-s
 
 Measured on 14 days of 1-second data (1,209,600 rows, activity + light). Times are wall-clock and include the Excel export.
 
-| Bin size | Python app (`cli.py`) | CoCirca desktop | Speed-up |
+| Bin size | Python app (`cli.py`) | CoSirca desktop | Speed-up |
 |---|---|---|---|
 | 10 min | 8.5 s | 0.63 s | ≈ 13× |
 | 1 s | 50.5 s | 1.7 s | ≈ 30× |
@@ -84,7 +84,7 @@ an Empatica E4 wristband worn for 9.1 days, as five CSV files: accelerometer at 
 temperature, heart rate and IBI. Together they are 1.07 GB and 26.3 million rows, merged into one
 recording with five channels. Measured on a Ryzen 7 7445HS (6 cores) with 32 GB RAM.
 
-| Step | CoCirca desktop | Python app |
+| Step | CoSirca desktop | Python app |
 |---|---|---|
 | Import dialog open with all 5 previews (from app launch) | 1.1–1.4 s | — |
 | Import: read, parse and merge all 5 files | 1.7–2.3 s | 55 s |
@@ -140,7 +140,7 @@ src/theme.rs       colour roles, palettes, axis-label style
 src/charts.rs      egui_plot charts, actogram mesh, polar plot
 src/export.rs      Excel (rust_xlsxwriter) and CSV export
 src/app.rs         the egui application
-src/cli.rs         headless runner (cocirca-cli)
+src/cli.rs         headless runner (cosirca-cli)
 examples/bench_import.rs     latency benchmark (import + analysis) on any files
 scripts/fetch_big_ideas.sh   downloads the 1 GB real recording used in the benchmark
 ```

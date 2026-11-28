@@ -1,4 +1,4 @@
-//! CoCirca: circadian rhythmometry engine and desktop UI.
+//! CoSirca: circadian rhythmometry engine and desktop UI.
 //!
 //! Analysis modules are UI-independent; `app` and `charts` hold the egui front end.
 

@@ -91,7 +91,7 @@ enum Msg {
     Batch(u64, BatchTable),
 }
 
-pub struct CocircaApp {
+pub struct CosircaApp {
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     dataset: Option<Arc<RawDataset>>,
@@ -143,7 +143,7 @@ pub struct CocircaApp {
     shot_subject: usize,
 }
 
-impl CocircaApp {
+impl CosircaApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let mut defs = FontDefinitions::default();
         // Windows symbol fonts as fallbacks so τ, χ², ≈, Δφ, R̄ … always render
@@ -163,7 +163,7 @@ impl CocircaApp {
         let (tx, rx) = channel();
         let cfg = Config::default();
         let bin_idx = BIN_SIZES.iter().position(|&b| b == cfg.epoch_sec).unwrap_or(10);
-        let mut app = CocircaApp {
+        let mut app = CosircaApp {
             tx,
             rx,
             dataset: None,
@@ -630,7 +630,7 @@ impl CocircaApp {
     fn top_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.heading(RichText::new("CoCirca").strong());
+                ui.heading(RichText::new("CoSirca").strong());
                 ui.label(RichText::new("circadian rhythmometry").weak());
                 ui.separator();
                 if ui
@@ -1121,7 +1121,7 @@ fn welcome(ui: &mut egui::Ui, busy: bool) -> bool {
     let mut clicked = false;
     ui.add_space(24.0);
     ui.vertical_centered(|ui| {
-        ui.heading(RichText::new("CoCirca").size(28.0).strong());
+        ui.heading(RichText::new("CoSirca").size(28.0).strong());
         ui.label(RichText::new("Circadian rhythmometry for actigraphy, light, temperature, heart rate and molecular time courses").weak());
         ui.add_space(16.0);
         let w = ui.available_width().min(760.0);
@@ -1154,7 +1154,7 @@ fn welcome(ui: &mut egui::Ui, busy: bool) -> bool {
     clicked
 }
 
-impl CocircaApp {
+impl CosircaApp {
     fn batch_view(&mut self, ui: &mut egui::Ui) {
         let Some(b) = &self.batch else { return };
         let ok = b.rows.iter().filter(|r| r.1.is_ok()).count();
@@ -1497,7 +1497,7 @@ fn daily_table(ui: &mut egui::Ui, ch: &crate::pipeline::ChannelReport) {
     });
 }
 
-impl eframe::App for CocircaApp {
+impl eframe::App for CosircaApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_messages(ctx);
         self.ensure_label_fonts(ctx);

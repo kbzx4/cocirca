@@ -1,6 +1,6 @@
 //! Parity with the Python app (`cli.py --epoch-min 60`) on the bundled hourly activity dataset.
 
-use cocirca::{data, pipeline, stats::hhmm};
+use cosirca::{data, pipeline, stats::hhmm};
 use std::path::Path;
 
 #[test]
