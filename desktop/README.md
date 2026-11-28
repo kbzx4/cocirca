@@ -35,6 +35,19 @@ The full list of supported formats is in the main [README](../README.md#supporte
 `--header-line`, `--layout`, `--subject`, `--merge`/`--separate`), and `--batch` runs every subject
 of a file, archive or folder.
 
+**Live Phyphox recording** (toolbar → 📡 Live Phyphox) records activity and light from a phone while
+you watch the analysis update.
+- **Setting up the phone:** in Phyphox, open an experiment with Acceleration and/or Light, choose
+  ⋮ → *Allow remote access*, and enter the address it shows. The phone and the PC must be on the same
+  Wi-Fi. **Test connection** shows which sensor buffers were found.
+- **What it records:** each poll (every 1–60 s) fetches the samples recorded since the previous poll. It
+  stores mean ENMO activity (milli-g) and mean illuminance (lux) as one row in a CSV log. The log is
+  written as rows arrive, and choosing an existing log resumes it.
+- **Live analysis:** the recording is re-analysed every 30 s once it covers 6 bins.
+- **Without a phone:** *Simulated phone* generates a 24 h rhythm in real time, or sped up to 1 s = 10 min
+  or 1 s = 1 h.
+- **Opening a log later:** logs are ordinary CSV files that both this app and the Streamlit app can open.
+
 **RR / inter-beat interval files** (Holter, chest straps; one interval per line in ms or s, optional
 `RR` / `IBI` / `NN` header) are recognised automatically and analysed as heart rate (bpm).
 - **Beat times:** built from the cumulative RR intervals.
@@ -53,7 +66,7 @@ cosirca-cli --batch rr-interval-healthy-subjects-1.0.0.zip --tau fixed24 --bin-s
 
 | Area | What you get |
 |---|---|
-| Binning | Bin size from 1 s to 6 h, with bin-centre timestamps and short-gap interpolation |
+| Binning | Bin size from 1 s to 6 h, or matched to the data's own sampling interval; bin-centre timestamps and short-gap interpolation |
 | Periodicity | Lomb-Scargle (≡ cosinor R² sweep), Sokolove-Bushell χ² with critical line, and consensus τ over a 9–36 h scan (adjustable) |
 | Cosinor | Single fit and 1–6 harmonics, with 95% CIs, partial F-tests, orthophase/bathyphase and a population-mean cosinor |
 | Rhythm bands | Ultradian / circadian / infradian detection by sequential prewhitening with Šidák correction, plus harmonic and leakage classification |
@@ -62,7 +75,7 @@ cosirca-cli --batch rr-interval-healthy-subjects-1.0.0.zip --tau fixed24 --bin-s
 | Circular | Mean phase, R̄, κ and Rayleigh for acrophase, onset and offset, with a polar plot |
 | Phase shift | Day-to-day shift, unwrapped drift, implied τ, Watson-Williams pre/post test and the activity–light phase angle |
 | Non-parametric | IS, IV, RA, M10, L5 and the 24 h profile |
-| Charts | Double-plotted actogram with light overlay and onset/offset markers, plus time series, waveform, periodograms, bands, polar plot and shift timeline. All charts zoom, pan and show hover readouts |
+| Charts | Double-plotted actogram with light overlay and onset/offset markers, plus time series (data in grey, single and multi-harmonic fits bold in separate panels), waveform, periodograms, bands, polar plot and shift timeline. Time series and waveform have a Y-axis setting: auto (waveform: twice the fitted curve's range), all data, or manual. All charts zoom, pan and show hover readouts |
 | Theme | Background (preset or custom), 5 palettes and per-role colours. Axis labels: font (installed Windows fonts), size, bold, separate X/Y colours, and renaming any label |
 | Export | Excel workbook with native, theme-styled charts; full-resolution epochs CSV; PNG of the current chart |
 
@@ -130,6 +143,7 @@ output on `data/activity_hourly_2023-01-26_to_02-03.csv`.
 ```
 src/import.rs      format detection and parsing (all supported formats), parallel row parser, merging
 src/import_ui.rs   the import dialog
+src/live.rs        live Phyphox recorder (HTTP polling, simulated phone, CSV log)
 src/data.rs        dataset model, RR → heart rate, k-way merge, synthetic demo, epoch binning
 src/cosinor.rs     streaming cosinor fit, R² period sweep
 src/rhythm.rs      periodograms, rhythm bands (prewhitening), 12 h analysis, bimodality

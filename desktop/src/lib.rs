@@ -11,6 +11,7 @@ pub mod data;
 pub mod export;
 pub mod import;
 pub mod import_ui;
+pub mod live;
 pub mod nonparam;
 pub mod pipeline;
 pub mod rhythm;

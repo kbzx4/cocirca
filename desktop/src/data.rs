@@ -204,6 +204,19 @@ impl RawDataset {
     }
 }
 
+/// Typical sampling interval in seconds: the median positive gap between time stamps, measured on up to
+/// 20,000 evenly spread pairs (merged sensors and duplicate stamps don't skew it much).
+pub fn sampling_interval_s(t_ms: &[i64]) -> Option<f64> {
+    let n = t_ms.len();
+    if n < 2 {
+        return None;
+    }
+    let step = ((n - 1) / 20_000).max(1);
+    let gaps: Vec<f64> = (0..n - 1).step_by(step).map(|i| (t_ms[i + 1] - t_ms[i]) as f64 / 1000.0).filter(|&g| g > 0.0).collect();
+    let m = crate::stats::median(&gaps);
+    m.is_finite().then_some(m)
+}
+
 /// Which set each row of the time-ordered merge comes from, for sets that are each sorted by time.
 /// Ties go to the lower set index (a stable merge).
 fn merge_order(ts: &[&[i64]]) -> Vec<u32> {
@@ -720,6 +733,17 @@ mod tests {
         assert!((b.elapsed_h[0] - 0.5).abs() < 1e-12);
         assert_eq!(b.day_index[71], 3);
         assert!(b.has_activity && b.has_light && b.extra.is_empty());
+    }
+
+    #[test]
+    fn sampling_interval_detection() {
+        let t: Vec<i64> = (0..1000).map(|i| i * 60_000).collect();
+        assert_eq!(sampling_interval_s(&t), Some(60.0));
+        // duplicate stamps (minute-resolution heart rate) and one gap don't change it
+        let mut t: Vec<i64> = (0..300).flat_map(|i| [i * 60_000, i * 60_000]).collect();
+        t.extend([10_000_000_000]);
+        assert_eq!(sampling_interval_s(&t), Some(60.0));
+        assert_eq!(sampling_interval_s(&[5]), None);
     }
 
     #[test]

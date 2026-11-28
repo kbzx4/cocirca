@@ -39,6 +39,60 @@ pub struct Extras {
     pub fold_mean: Vec<[f64; 2]>,
     /// up to 6000 raw (phase, value) points for the scatter
     pub fold_points: Vec<[f64; 2]>,
+    /// Y ranges, computed once per analysis: (auto, all data)
+    pub y_series: ((f64, f64), (f64, f64)),
+    pub y_wave: ((f64, f64), (f64, f64)),
+}
+
+/// Widen [lo, hi] to twice its height, centred on it.
+fn twice(lo: f64, hi: f64) -> (f64, f64) {
+    if !(lo.is_finite() && hi.is_finite()) {
+        return (0.0, 1.0);
+    }
+    let span = (hi - lo).max(hi.abs().max(lo.abs()).max(1e-9) * 1e-3);
+    (lo - span / 2.0, hi + span / 2.0)
+}
+
+/// Full range of the finite values with a 4 % margin.
+fn all_range(v: impl Iterator<Item = f64>) -> (f64, f64) {
+    let (lo, hi) = v.filter(|x| x.is_finite()).fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), x| (a.min(x), b.max(x)));
+    if !(lo.is_finite() && hi.is_finite()) {
+        return (0.0, 1.0);
+    }
+    let m = ((hi - lo) * 0.04).max(hi.abs().max(1e-9) * 1e-3);
+    (lo - m, hi + m)
+}
+
+/// (lowest, highest) value of the single and multi-harmonic fits over one cycle
+fn fit_extent(ch: &ChannelReport) -> (f64, f64) {
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for i in 0..=240 {
+        let x = ch.tau * i as f64 / 240.0;
+        for v in [ch.single.eval(x), ch.harmonics.eval(x)] {
+            if v.is_finite() {
+                lo = lo.min(v);
+                hi = hi.max(v);
+            }
+        }
+    }
+    (lo, hi)
+}
+
+/// Time series: the 1st–99th percentile of the data (isolated spikes run off the top until you zoom
+/// out), always covering the fitted curves.
+fn series_auto_y(values: &[f64], ch: &ChannelReport) -> (f64, f64) {
+    let mut v: Vec<f64> = values.iter().copied().filter(|x| x.is_finite()).collect();
+    if v.is_empty() {
+        return (0.0, 1.0);
+    }
+    let n = v.len();
+    let (i1, i99) = (((n - 1) as f64 * 0.01) as usize, ((n - 1) as f64 * 0.99) as usize);
+    let p1 = *v.select_nth_unstable_by(i1, |a, b| a.total_cmp(b)).1;
+    let p99 = *v.select_nth_unstable_by(i99, |a, b| a.total_cmp(b)).1;
+    let (flo, fhi) = fit_extent(ch);
+    let (lo, hi) = (p1.min(flo), p99.max(fhi));
+    let m = ((hi - lo) * 0.06).max(hi.abs().max(1e-9) * 1e-3);
+    (lo - m, hi + m)
 }
 
 pub fn build_extras(b: &Binned, ch: &ChannelReport, light_overlay: Option<&[f64]>) -> Extras {
@@ -100,11 +154,16 @@ pub fn build_extras(b: &Binned, ch: &ChannelReport, light_overlay: Option<&[f64]
             c[k] += 1;
         }
     }
-    let fold_mean = (0..nb).filter(|&k| c[k] > 0).map(|k| [(k as f64 + 0.5) * tau / nb as f64, s[k] / c[k] as f64]).collect();
+    let fold_mean: Vec<[f64; 2]> = (0..nb).filter(|&k| c[k] > 0).map(|k| [(k as f64 + 0.5) * tau / nb as f64, s[k] / c[k] as f64]).collect();
     let valid: Vec<usize> = (0..n).filter(|&i| ch.values[i].is_finite()).collect();
     let step = (valid.len() / 6000).max(1);
-    let fold_points = valid.iter().step_by(step).map(|&i| [b.elapsed_h[i].rem_euclid(tau), ch.values[i]]).collect();
-    Extras { acto: ActogramData { days, cols, values, light, scale, lo, light_lo, light_scale }, fold_mean, fold_points }
+    let fold_points: Vec<[f64; 2]> = valid.iter().step_by(step).map(|&i| [b.elapsed_h[i].rem_euclid(tau), ch.values[i]]).collect();
+    // Waveform: the fitted curves and the phase means, widened to twice their height
+    let (flo, fhi) = fit_extent(ch);
+    let (mlo, mhi) = fold_mean.iter().map(|p| p[1]).filter(|v| v.is_finite()).fold((flo, fhi), |(a, b), v| (a.min(v), b.max(v)));
+    let y_wave = (twice(mlo, mhi), all_range(fold_points.iter().map(|p| p[1]).chain([mlo, mhi])));
+    let y_series = (series_auto_y(&ch.values, ch), all_range(ch.values.iter().copied()));
+    Extras { acto: ActogramData { days, cols, values, light, scale, lo, light_lo, light_scale }, fold_mean, fold_points, y_series, y_wave }
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -210,11 +269,13 @@ pub struct PlotOpts {
     pub include_y: Vec<f64>,
     pub include_x: Vec<f64>,
     pub link_x: Option<&'static str>,
+    /// Initial Y range (zoom / drag still work; double-click returns here). None: fit the content.
+    pub y_range: Option<(f64, f64)>,
 }
 
 impl Default for PlotOpts {
     fn default() -> Self {
-        PlotOpts { height: 260.0, legend: true, include_y: Vec::new(), include_x: Vec::new(), link_x: None }
+        PlotOpts { height: 260.0, legend: true, include_y: Vec::new(), include_x: Vec::new(), link_x: None, y_range: None }
     }
 }
 
@@ -228,7 +289,12 @@ pub fn themed_plot<R>(ui: &mut egui::Ui, cx: &ChartCtx, id: &str, x: &str, y: &s
         v.widgets.noninteractive.bg_stroke = Stroke::new(1.0f32, th.grid);
         v.window_fill = th.background;
         v.window_stroke = Stroke::new(1.0f32, th.grid);
-        let mut plot = Plot::new(id).height(o.height).x_axis_label(cx.axis(x, true)).y_axis_label(cx.axis(y, false)).y_axis_min_width(40.0);
+        // the range is part of the id so a new range resets the view
+        let id = match o.y_range {
+            Some((lo, hi)) => format!("{id}|{lo:e}|{hi:e}"),
+            None => id.to_string(),
+        };
+        let mut plot = Plot::new(&id).height(o.height).x_axis_label(cx.axis(x, true)).y_axis_label(cx.axis(y, false)).y_axis_min_width(40.0);
         if o.legend {
             plot = plot.legend(Legend::default().position(Corner::RightTop));
         }
@@ -237,6 +303,9 @@ pub fn themed_plot<R>(ui: &mut egui::Ui, cx: &ChartCtx, id: &str, x: &str, y: &s
         }
         for &xv in &o.include_x {
             plot = plot.include_x(xv);
+        }
+        if let Some((lo, hi)) = o.y_range {
+            plot = plot.include_y(lo).include_y(hi).auto_bounds(egui::Vec2b::new(true, false));
         }
         if let Some(g) = o.link_x {
             plot = plot.link_axis(g, egui::Vec2b::new(true, false)).link_cursor(g, egui::Vec2b::new(true, false));
@@ -462,12 +531,27 @@ pub fn actogram(ui: &mut egui::Ui, cx: &ChartCtx, rep: &Report, ch: &ChannelRepo
 // Time series
 // ------------------------------------------------------------------------------------------------
 
-pub fn time_series(ui: &mut egui::Ui, cx: &ChartCtx, rep: &Report, ch: &ChannelReport, show_fits: bool, height: f32, link: Option<&'static str>) {
+/// Which fitted curve a time-series panel shows over the data.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SeriesFit {
+    None,
+    Single,
+    Harmonic,
+}
+
+/// One time-series panel. With a fit, the data is drawn thin and grey and the fit bold on top, so the
+/// two never blend; the single and multi-harmonic fits get separate panels.
+pub fn time_series(ui: &mut egui::Ui, cx: &ChartCtx, rep: &Report, ch: &ChannelReport, fit: SeriesFit, height: f32, link: Option<&'static str>, y_range: Option<(f64, f64)>) {
     let th = cx.theme;
     let b = &rep.binned;
     let (x0, dx) = (b.elapsed_h.first().copied().unwrap_or(0.0), b.epoch_sec as f64 / 3600.0);
-    let opts = PlotOpts { height, link_x: link, ..Default::default() };
-    themed_plot(ui, cx, &format!("ts-{}", ch.name), "Elapsed Time (hours)", &value_label(ch), opts, |pu| {
+    let opts = PlotOpts { height, link_x: link, y_range, ..Default::default() };
+    let id = match fit {
+        SeriesFit::None => format!("ts-{}", ch.name),
+        SeriesFit::Single => format!("ts1-{}", ch.name),
+        SeriesFit::Harmonic => format!("tsh-{}", ch.name),
+    };
+    themed_plot(ui, cx, &id, "Elapsed Time (hours)", &value_label(ch), opts, |pu| {
         // Auto-bounds (initial view / after double-click reset): decimate everything so the view fits the
         // whole recording. Once the user zooms or pans, decimate only the visible window at full detail.
         let (xmin, xmax) = if pu.auto_bounds().x {
@@ -479,12 +563,22 @@ pub fn time_series(ui: &mut egui::Ui, cx: &ChartCtx, rep: &Report, ch: &ChannelR
         let width_px = pu.response().rect.width().max(200.0) as usize;
         let pts = decimate(x0, dx, &ch.values, xmin, xmax, width_px);
         let xs: Vec<f64> = if pts.len() > 1 { pts.iter().map(|p| p[0]).step_by((pts.len() / 1500).max(1)).collect() } else { Vec::new() };
-        pu.line(Line::new(PlotPoints::from(pts)).color(channel_color(th, ch)).width(1.0f32).name(&ch.name));
-        if show_fits && !xs.is_empty() {
-            let single: Vec<[f64; 2]> = xs.iter().map(|&x| [x, ch.single.eval(x)]).collect();
-            let multi: Vec<[f64; 2]> = xs.iter().map(|&x| [x, ch.harmonics.eval(x)]).collect();
-            pu.line(Line::new(PlotPoints::from(single)).color(th.role("accent")).width(1.2f32).name("Single cosinor"));
-            pu.line(Line::new(PlotPoints::from(multi)).color(th.role("fit")).width(1.8f32).name(format!("{}-harmonic cosinor", ch.harmonics.nh)));
+        // mid-grey on light and dark backgrounds alike: the chart's text colour, half transparent
+        let data_col = if fit == SeriesFit::None { channel_color(th, ch) } else { alpha(th.foreground, 0.42) };
+        pu.line(Line::new(PlotPoints::from(pts)).color(data_col).width(1.0f32).name(&ch.name));
+        if xs.is_empty() {
+            return;
+        }
+        match fit {
+            SeriesFit::Single => {
+                let pts: Vec<[f64; 2]> = xs.iter().map(|&x| [x, ch.single.eval(x)]).collect();
+                pu.line(Line::new(PlotPoints::from(pts)).color(th.role("accent")).width(3.0f32).name(format!("Single cosinor ({:.1} h)", ch.tau)));
+            }
+            SeriesFit::Harmonic => {
+                let pts: Vec<[f64; 2]> = xs.iter().map(|&x| [x, ch.harmonics.eval(x)]).collect();
+                pu.line(Line::new(PlotPoints::from(pts)).color(th.role("fit")).width(3.0f32).name(format!("{}-harmonic cosinor", ch.harmonics.nh)));
+            }
+            SeriesFit::None => {}
         }
     });
 }
@@ -493,10 +587,10 @@ pub fn time_series(ui: &mut egui::Ui, cx: &ChartCtx, rep: &Report, ch: &ChannelR
 // Waveform (folded over τ) with cosinor fits
 // ------------------------------------------------------------------------------------------------
 
-pub fn waveform(ui: &mut egui::Ui, cx: &ChartCtx, ch: &ChannelReport, ex: &Extras) {
+pub fn waveform(ui: &mut egui::Ui, cx: &ChartCtx, ch: &ChannelReport, ex: &Extras, y_range: Option<(f64, f64)>) {
     let th = cx.theme;
     let tau = ch.tau;
-    let opts = PlotOpts { height: 340.0, include_x: vec![0.0, tau], ..Default::default() };
+    let opts = PlotOpts { height: 340.0, include_x: vec![0.0, tau], y_range, ..Default::default() };
     themed_plot(ui, cx, &format!("wave-{}", ch.name), "Phase / Clock Hour (h)", &value_label(ch), opts, |pu| {
         pu.points(Points::new(PlotPoints::from(ex.fold_points.clone())).color(alpha(th.muted, 0.35)).radius(1.2f32).name("Data"));
         pu.line(Line::new(PlotPoints::from(ex.fold_mean.clone())).color(channel_color(th, ch)).width(1.5f32).name("Mean per phase bin"));

@@ -4,6 +4,7 @@ use crate::charts::{self, family_key, ActoOpts, ChartCtx, Extras};
 use crate::data::{self, format_bin_size, ActivityMethod, RawDataset};
 use crate::import::{self, ImportResult, Parsed, Source};
 use crate::import_ui::{self, ImportSession, PendingFile, PREVIEW_ROWS};
+use crate::live::{self, Recorder};
 use crate::nonparam::OnsetMethod;
 use crate::pipeline::{run_analysis, Config, PeriodMode, Report};
 use crate::rhythm::BAND_NAMES;
@@ -11,10 +12,10 @@ use crate::stats::hhmm;
 use crate::theme::{self, Theme, ThemeSettings, BACKGROUNDS, PALETTES, ROLES};
 use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, RichText};
 use rayon::prelude::*;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const BIN_SIZES: [i64; 19] = [1, 2, 5, 10, 15, 20, 30, 60, 120, 300, 600, 900, 1200, 1800, 3600, 7200, 10800, 14400, 21600];
@@ -124,6 +125,14 @@ pub struct CosircaApp {
     channel: usize,
     acto: ActoOpts,
     show_fits: bool,
+    /// Time series: stack every channel's data instead of the fits for the selected one
+    series_all: bool,
+    /// Y axis per chart and channel ("wave:Activity", "ts:Light" …)
+    y_scales: HashMap<String, YScale>,
+    /// Bin size follows the data's sampling interval
+    bin_auto: bool,
+    /// (dataset pointer, sampling interval in s) so it is measured once per dataset
+    interval_cache: Option<(usize, Option<f64>)>,
     theme_settings: ThemeSettings,
     font_defs: FontDefinitions,
     loaded_fonts: HashSet<String>,
@@ -141,6 +150,18 @@ pub struct CosircaApp {
     shot_batch: bool,
     /// --subject N: show subject N once imported (for screenshots)
     shot_subject: usize,
+    /// Live Phyphox recorder: window, settings, the running recorder, connection test
+    live_open: bool,
+    live: Option<Recorder>,
+    live_settings: live::Settings,
+    live_probe: Arc<Mutex<(bool, Option<Result<live::Probe, String>>)>>,
+    live_error: Option<String>,
+    /// Refresh the view with the recording as rows arrive
+    live_auto: bool,
+    /// The dataset on screen is the live recording
+    live_view: bool,
+    /// Last live refresh: when, and how many rows it had
+    live_refreshed: Option<(Instant, usize)>,
 }
 
 impl CosircaApp {
@@ -194,6 +215,10 @@ impl CosircaApp {
             channel: 0,
             acto: ActoOpts { double: true, light: true, markers: true },
             show_fits: true,
+            series_all: false,
+            y_scales: HashMap::new(),
+            bin_auto: false,
+            interval_cache: None,
             theme_settings: ThemeSettings::default(),
             font_defs: defs,
             loaded_fonts: HashSet::new(),
@@ -207,6 +232,14 @@ impl CosircaApp {
             shot_dialog: false,
             shot_batch: false,
             shot_subject: 0,
+            live_open: false,
+            live: None,
+            live_settings: live::Settings::default(),
+            live_probe: Arc::new(Mutex::new((false, None))),
+            live_error: None,
+            live_auto: true,
+            live_view: false,
+            live_refreshed: None,
         };
         // Files passed on the command line (e.g. "Open with")
         let mut files: Vec<PathBuf> = Vec::new();
@@ -281,6 +314,33 @@ impl CosircaApp {
                 "--analyse-all" => app.shot_batch = true,
                 "--subject" => {
                     app.shot_subject = next.parse::<usize>().unwrap_or(1).saturating_sub(1);
+                    i += 1;
+                }
+                // --live-phone URL LOG: record from a phone (1 s polls) into LOG with the window open
+                "--live-phone" => {
+                    let log = args.get(i + 2).cloned().unwrap_or_default();
+                    app.live_settings = live::Settings { url: next.clone(), source: live::Source::Phone, poll_s: 1.0, log_path: PathBuf::from(log) };
+                    app.live_open = true;
+                    match Recorder::start(app.live_settings.clone(), cc.egui_ctx.clone()) {
+                        Ok(r) => {
+                            app.live = Some(r);
+                            app.live_view = true;
+                        }
+                        Err(e) => app.live_error = Some(e),
+                    }
+                    i += 2;
+                }
+                // --live-sim LOG: record a fast simulated phone into LOG (resumes it) with the window open
+                "--live-sim" => {
+                    app.live_settings = live::Settings { url: String::new(), source: live::Source::Simulated { speed: 3600 }, poll_s: 0.25, log_path: PathBuf::from(&next) };
+                    app.live_open = true;
+                    match Recorder::start(app.live_settings.clone(), cc.egui_ctx.clone()) {
+                        Ok(r) => {
+                            app.live = Some(r);
+                            app.live_view = true;
+                        }
+                        Err(e) => app.live_error = Some(e),
+                    }
                     i += 1;
                 }
                 a if !a.starts_with("--") => files.push(PathBuf::from(a)),
@@ -391,6 +451,7 @@ impl CosircaApp {
     }
 
     fn set_subjects(&mut self, subjects: Vec<RawDataset>, ctx: &egui::Context) {
+        self.live_view = false; // something else was opened; a running recording keeps logging
         self.subjects = subjects.into_iter().map(Arc::new).collect();
         self.subject_idx = 0;
         self.subject_filter.clear();
@@ -648,6 +709,11 @@ impl CosircaApp {
                 {
                     self.open_dialog(ctx);
                 }
+                let rec = self.live.as_ref().is_some_and(|r| r.is_running());
+                let live_label = if rec { RichText::new("📡 Live ● recording").color(Color32::from_rgb(230, 80, 80)) } else { RichText::new("📡 Live Phyphox") };
+                if ui.selectable_label(self.live_open, live_label).on_hover_text("Record activity and light live from a phone running Phyphox (or a simulated phone)").clicked() {
+                    self.live_open = !self.live_open;
+                }
                 if ui.button("Demo data").on_hover_text("14 days of synthetic activity + light with a 3.5 h phase delay from day 8").clicked() {
                     self.load_demo(ctx);
                 }
@@ -809,11 +875,30 @@ impl CosircaApp {
 
     fn analysis_section(&mut self, ui: &mut egui::Ui) {
         egui::CollapsingHeader::new(RichText::new("2. Analysis").strong()).default_open(true).show(ui, |ui| {
-            ui.label("Bin size");
-            let r = ui.add(egui::Slider::new(&mut self.bin_idx, 0..=BIN_SIZES.len() - 1).show_value(false));
+            ui.horizontal(|ui| {
+                ui.label("Bin size");
+                ui.checkbox(&mut self.bin_auto, "match the data")
+                    .on_hover_text("Use the recording's own sampling interval (the typical gap between time stamps), rounded up to the nearest bin size");
+            });
+            let interval = self.dataset.as_ref().and_then(|d| {
+                let key = Arc::as_ptr(d) as usize;
+                if self.interval_cache.is_none_or(|(k, _)| k != key) {
+                    self.interval_cache = Some((key, data::sampling_interval_s(&d.t_ms)));
+                }
+                self.interval_cache.and_then(|(_, v)| v)
+            });
+            if self.bin_auto {
+                if let Some(iv) = interval {
+                    self.bin_idx = BIN_SIZES.iter().position(|&b| b as f64 >= iv * 0.999).unwrap_or(BIN_SIZES.len() - 1);
+                }
+            }
+            let r = ui.add_enabled(!self.bin_auto, egui::Slider::new(&mut self.bin_idx, 0..=BIN_SIZES.len() - 1).show_value(false));
             self.cfg.epoch_sec = BIN_SIZES[self.bin_idx];
             let per_day = 86_400 / self.cfg.epoch_sec;
             let mut info = format!("{} ({} bins/day)", format_bin_size(self.cfg.epoch_sec), per_day);
+            if let Some(iv) = interval.filter(|_| self.bin_auto) {
+                info += &format!(" · data every {}", import::format_duration(iv));
+            }
             if let Some(d) = &self.dataset {
                 if let (Some(a), Some(b)) = (d.t_ms.first(), d.t_ms.last()) {
                     let n = (b - a) / 1000 / self.cfg.epoch_sec + 1;
@@ -1051,14 +1136,34 @@ impl CosircaApp {
                     charts::actogram(ui, &cx, rep, ch, &ex.acto, &self.acto);
                 }
                 Tab::TimeSeries => {
-                    ui.checkbox(&mut self.show_fits, "Show cosinor fits");
-                    for c in &chans {
-                        charts::time_series(ui, &cx, rep, c, self.show_fits, 260.0, Some("ts"));
+                    ui.horizontal(|ui| {
+                        ui.add_enabled(!self.series_all, egui::Checkbox::new(&mut self.show_fits, "Show cosinor fits"));
+                        if chans.len() > 1 {
+                            ui.checkbox(&mut self.series_all, "All channels, stacked");
+                        }
+                    });
+                    if self.series_all && chans.len() > 1 {
+                        for (k, c) in chans.iter().enumerate() {
+                            let yr = y_control(ui, &mut self.y_scales, format!("ts:{}", c.name), comp.extras[k].y_series, &c.name);
+                            charts::time_series(ui, &cx, rep, c, charts::SeriesFit::None, 220.0, Some("ts"), Some(yr));
+                        }
+                    } else {
+                        let yr = y_control(ui, &mut self.y_scales, format!("ts:{}", ch.name), ex.y_series, "");
+                        if self.show_fits {
+                            // data in grey with each fit bold on top; single and multi-harmonic in separate panels
+                            ui.label(RichText::new(format!("{} with the single cosinor ({:.1} h)", ch.name, ch.tau)).strong());
+                            charts::time_series(ui, &cx, rep, ch, charts::SeriesFit::Single, 250.0, Some("ts"), Some(yr));
+                            ui.label(RichText::new(format!("{} with the {}-harmonic cosinor", ch.name, ch.harmonics.nh)).strong());
+                            charts::time_series(ui, &cx, rep, ch, charts::SeriesFit::Harmonic, 250.0, Some("ts"), Some(yr));
+                        } else {
+                            charts::time_series(ui, &cx, rep, ch, charts::SeriesFit::None, 300.0, Some("ts"), Some(yr));
+                        }
                     }
                 }
                 Tab::Waveform => {
                     cosinor_table(ui, ch);
-                    charts::waveform(ui, &cx, ch, ex);
+                    let yr = y_control(ui, &mut self.y_scales, format!("wave:{}", ch.name), ex.y_wave, "");
+                    charts::waveform(ui, &cx, ch, ex, Some(yr));
                 }
                 Tab::Periodogram => {
                     let pg = &ch.periodogram;
@@ -1500,6 +1605,8 @@ fn daily_table(ui: &mut egui::Ui, ch: &crate::pipeline::ChannelReport) {
 impl eframe::App for CosircaApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_messages(ctx);
+        self.live_tick(ctx);
+        self.live_window(ctx);
         self.ensure_label_fonts(ctx);
         self.handle_screenshot(ctx);
         if let Some((path, frames)) = self.auto_shot.clone() {
@@ -1568,5 +1675,310 @@ impl eframe::App for CosircaApp {
         self.side_panel(ctx);
         self.central(ctx, &theme);
         self.schedule_analysis(ctx);
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Live Phyphox recording
+// ------------------------------------------------------------------------------------------------
+
+impl CosircaApp {
+    /// Show the recording so far. Keeps the current charts until the new analysis is in, so the view
+    /// updates in place instead of blanking at every refresh.
+    fn show_live(&mut self, ds: RawDataset, ctx: &egui::Context) {
+        if !self.live_view || self.subjects.len() != 1 {
+            self.computed = None;
+            self.import_notes.clear();
+            self.last_import = None;
+        }
+        self.live_view = true;
+        self.subjects = vec![Arc::new(ds)];
+        self.subject_idx = 0;
+        self.subject_filter.clear();
+        self.batch = None;
+        self.dataset = self.subjects.first().cloned();
+        self.requested_cfg = Some(self.cfg.clone());
+        self.pending_since = None;
+        self.start_analysis(ctx);
+    }
+
+    /// Re-analyse the live recording when new rows have arrived (every 30 s, or 2 s for a fast simulation).
+    fn live_tick(&mut self, ctx: &egui::Context) {
+        let Some(rec) = &self.live else { return };
+        if rec.is_running() {
+            ctx.request_repaint_after(Duration::from_millis(500));
+        }
+        if !self.live_auto || !self.live_view || self.loading || self.running || self.import.is_some() {
+            return;
+        }
+        let (n, span_ms) = rec.with_status(|s| (s.rows.len(), s.rows.last().zip(s.rows.first()).map_or(0, |(l, f)| l.t_ms - f.t_ms)));
+        let every = match rec.settings.source {
+            live::Source::Simulated { speed } if speed > 1 => Duration::from_secs(2),
+            _ => Duration::from_secs(30),
+        };
+        let due = self.live_refreshed.is_none_or(|(t, seen)| n != seen && t.elapsed() >= every);
+        // the analysis needs at least 6 bins of data
+        if due && n > 1 && span_ms >= 6 * self.cfg.epoch_sec * 1000 {
+            let ds = rec.dataset();
+            self.live_refreshed = Some((Instant::now(), n));
+            self.show_live(ds, ctx);
+        }
+    }
+
+    fn start_probe(&mut self, ctx: &egui::Context) {
+        let url = self.live_settings.url.clone();
+        let slot = self.live_probe.clone();
+        *slot.lock().unwrap() = (true, None);
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let r = live::probe(&url);
+            *slot.lock().unwrap() = (false, Some(r));
+            ctx.request_repaint();
+        });
+    }
+
+    fn live_window(&mut self, ctx: &egui::Context) {
+        if !self.live_open {
+            return;
+        }
+        let ok = Color32::from_rgb(80, 190, 120);
+        let bad = Color32::from_rgb(235, 90, 80);
+        let warn = Color32::from_rgb(230, 170, 60);
+        let mut open = true;
+        egui::Window::new("📡 Live Phyphox recording")
+            .open(&mut open)
+            .resizable(false)
+            .default_width(460.0)
+            .default_pos(ctx.screen_rect().right_top() + egui::vec2(-500.0, 48.0)).show(ctx, |ui| {
+            let running = self.live.as_ref().is_some_and(|r| r.is_running());
+            ui.add_enabled_ui(!running, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Source");
+                    ui.radio_value(&mut self.live_settings.source, live::Source::Phone, "Phone (Phyphox)");
+                    let sim = matches!(self.live_settings.source, live::Source::Simulated { .. });
+                    if ui.radio(sim, "Simulated phone").clicked() && !sim {
+                        self.live_settings.source = live::Source::Simulated { speed: 1 };
+                    }
+                });
+                match self.live_settings.source {
+                    live::Source::Phone => {
+                        ui.label(
+                            RichText::new(
+                                "In Phyphox, open an experiment with Acceleration and/or Light, then ⋮ → Allow remote access, and enter the address it shows. \
+                                 The phone and this PC must be on the same Wi-Fi; keep the phone charging with Phyphox open.",
+                            )
+                            .small()
+                            .weak(),
+                        );
+                        let (probing, result) = self.live_probe.lock().unwrap().clone();
+                        ui.horizontal(|ui| {
+                            ui.label("Address");
+                            ui.add(egui::TextEdit::singleline(&mut self.live_settings.url).desired_width(230.0));
+                            if ui.add_enabled(!probing, egui::Button::new("Test connection")).clicked() {
+                                self.start_probe(ctx);
+                            }
+                            if probing {
+                                ui.spinner();
+                            }
+                        });
+                        match result {
+                            Some(Ok(p)) => {
+                                ui.colored_label(ok, format!("✔ Connected to \"{}\"", p.title));
+                                ui.label(RichText::new(p.map.describe()).small());
+                            }
+                            Some(Err(e)) => {
+                                ui.colored_label(bad, format!("✖ {e}"));
+                            }
+                            None => {}
+                        }
+                    }
+                    live::Source::Simulated { speed } => {
+                        ui.label(RichText::new("Generates a 24 h activity and light rhythm, to try the recorder without a phone.").small().weak());
+                        let mut sp = speed;
+                        ui.horizontal(|ui| {
+                            ui.label("Speed");
+                            for (v, l) in [(1u32, "real time"), (600, "1 s = 10 min"), (3600, "1 s = 1 h")] {
+                                ui.radio_value(&mut sp, v, l);
+                            }
+                        });
+                        self.live_settings.source = live::Source::Simulated { speed: sp };
+                    }
+                }
+                ui.horizontal(|ui| {
+                    ui.label("Poll every");
+                    ui.add(egui::Slider::new(&mut self.live_settings.poll_s, 1.0..=60.0).integer().suffix(" s"));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Log file");
+                    ui.label(RichText::new(self.live_settings.log_path.display().to_string()).small())
+                        .on_hover_text("Rows are written as they arrive, so nothing is lost if the app closes. Choosing an existing CoSirca live log resumes it.");
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Choose…").clicked() {
+                        let name = self.live_settings.log_path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+                        if let Some(p) = rfd::FileDialog::new().add_filter("CSV", &["csv"]).set_file_name(name).save_file() {
+                            self.live_settings.log_path = p;
+                        }
+                    }
+                    if ui.button("New file").on_hover_text("A new time-stamped file in Documents\\CoSirca").clicked() {
+                        self.live_settings.log_path = live::default_log_path();
+                    }
+                });
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                if running {
+                    if ui.button("⏹ Stop recording").clicked() {
+                        if let Some(r) = self.live.as_mut() {
+                            r.stop();
+                        }
+                    }
+                } else if ui.button(RichText::new("⏺ Start recording").strong()).clicked() {
+                    self.live = None; // stop and release a previous recorder first
+                    match Recorder::start(self.live_settings.clone(), ctx.clone()) {
+                        Ok(r) => {
+                            self.live = Some(r);
+                            self.live_error = None;
+                            self.live_refreshed = None;
+                            self.live_view = self.live_auto;
+                        }
+                        Err(e) => self.live_error = Some(e),
+                    }
+                }
+                ui.checkbox(&mut self.live_auto, "Show and analyse live")
+                    .on_hover_text("Re-analyses the recording as rows arrive (every 30 s) once it covers 6 bins");
+            });
+            if let Some(e) = &self.live_error {
+                ui.colored_label(bad, e);
+            }
+            let Some(rec) = &self.live else { return };
+            let (rows, resumed, polls, last, err, measuring, first) =
+                rec.with_status(|s| (s.rows.len(), s.resumed, s.polls, s.last, s.last_error.clone(), s.measuring, s.rows.first().map(|r| r.t_ms)));
+            egui::Grid::new("live_status").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
+                ui.label("Status");
+                if running {
+                    ui.colored_label(bad, format!("● Recording · {} · {}", rec.title, import::format_duration(rec.started.elapsed().as_secs_f64())));
+                } else {
+                    ui.label(format!("Stopped · {}", rec.title));
+                }
+                ui.end_row();
+                ui.label("Reading");
+                ui.label(RichText::new(&rec.buffers).small());
+                ui.end_row();
+                ui.label("Rows logged");
+                ui.label(if resumed > 0 {
+                    format!("{} ({} resumed from the file) · {} polls", import::group_thousands(rows), import::group_thousands(resumed), polls)
+                } else {
+                    format!("{} · {} polls", import::group_thousands(rows), polls)
+                });
+                ui.end_row();
+                if let Some(r) = last {
+                    ui.label("Latest");
+                    let mut parts = vec![data::ms_to_naive(r.t_ms).format("%Y-%m-%d %H:%M:%S").to_string()];
+                    if r.activity.is_finite() {
+                        parts.push(format!("activity {:.1} mg", r.activity));
+                    }
+                    if r.lux.is_finite() {
+                        parts.push(if rec.luminance { format!("luminance {:.1} cd/m²", r.lux) } else { format!("light {:.0} lux", r.lux) });
+                    }
+                    ui.label(parts.join(" · "));
+                    ui.end_row();
+                    if let Some(t0) = first {
+                        ui.label("Covers");
+                        let need = 6 * self.cfg.epoch_sec * 1000;
+                        let span = import::format_duration((r.t_ms - t0) as f64 / 1000.0);
+                        if r.t_ms - t0 < need {
+                            ui.label(format!("{span}; analysis starts once it covers {}", import::format_duration(need as f64 / 1000.0)));
+                        } else {
+                            ui.label(span);
+                        }
+                        ui.end_row();
+                    }
+                }
+            });
+            if measuring == Some(false) {
+                ui.horizontal(|ui| {
+                    ui.colored_label(warn, "Phyphox is connected but not measuring.");
+                    if rec.settings.source == live::Source::Phone && ui.button("▶ Start measuring on the phone").clicked() {
+                        let url = rec.settings.url.clone();
+                        std::thread::spawn(move || {
+                            let _ = live::control(&url, "start"); // the next poll shows whether it worked
+                        });
+                    }
+                });
+            }
+            if let Some(e) = err {
+                ui.colored_label(warn, format!("Last poll failed: {e}"));
+            }
+            if !self.live_view && rows > 1 && ui.button("Show the live recording").clicked() {
+                self.live_view = true;
+                self.live_auto = true;
+                self.live_refreshed = None;
+            }
+        });
+        if !open {
+            self.live_open = false; // a running recording keeps going in the background
+        }
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Y axis control (time series, waveform)
+// ------------------------------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum YScale {
+    /// waveform: the fitted curves at twice their height; time series: 1st–99th percentile of the data
+    Auto,
+    All,
+    Manual(f64, f64),
+}
+
+/// "Y axis: Auto / All data / Manual (from, to)" for one chart; returns the range to draw.
+fn y_control(ui: &mut egui::Ui, scales: &mut HashMap<String, YScale>, key: String, ranges: ((f64, f64), (f64, f64)), title: &str) -> (f64, f64) {
+    let (auto, all) = ranges;
+    let cur = scales.get(&key).copied().unwrap_or(YScale::Auto);
+    let mut next = cur;
+    let auto_name = if key.starts_with("wave:") { "Around the fit (2× its range)" } else { "Auto (1st–99th percentile)" };
+    ui.horizontal(|ui| {
+        if !title.is_empty() {
+            ui.label(RichText::new(title).strong());
+        }
+        ui.label("Y axis");
+        egui::ComboBox::from_id_salt(("yscale", &key))
+            .selected_text(match cur {
+                YScale::Auto => auto_name,
+                YScale::All => "All data",
+                YScale::Manual(..) => "Manual",
+            })
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(cur == YScale::Auto, auto_name).clicked() {
+                    next = YScale::Auto;
+                }
+                if ui.selectable_label(cur == YScale::All, "All data").clicked() {
+                    next = YScale::All;
+                }
+                if ui.selectable_label(matches!(cur, YScale::Manual(..)), "Manual").clicked() && !matches!(cur, YScale::Manual(..)) {
+                    let (lo, hi) = if cur == YScale::All { all } else { auto };
+                    next = YScale::Manual(lo, hi);
+                }
+            });
+        if let YScale::Manual(mut lo, mut hi) = next {
+            let speed = ((hi - lo).abs() / 200.0).max(1e-6);
+            ui.label("from");
+            ui.add(egui::DragValue::new(&mut lo).speed(speed).max_decimals(4));
+            ui.label("to");
+            ui.add(egui::DragValue::new(&mut hi).speed(speed).max_decimals(4));
+            if hi > lo {
+                next = YScale::Manual(lo, hi);
+            }
+        }
+        ui.label(RichText::new("scroll / drag to zoom, double-click to reset").weak().small());
+    });
+    scales.insert(key, next);
+    match next {
+        YScale::Auto => auto,
+        YScale::All => all,
+        YScale::Manual(lo, hi) => (lo, hi),
     }
 }
